@@ -1,37 +1,19 @@
-from __future__ import annotations
-
-import tempfile
 from pathlib import Path
-from uuid import uuid4
+from tempfile import NamedTemporaryFile
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from backend.app.analysis.features import analyze_signal
+from backend.app.dsp.modulation import analyze_modulation
 from backend.app.io.readers import load_signal
-from backend.app.schemas.signal import (
-    AnalysisResult,
-    SignalMetadata,
-    SignalParameters,
-    SpectrumResult,
-    WaterfallResult,
-)
+from backend.app.schemas.signal import AnalysisResult
 
 
-router = APIRouter(
-    prefix="/api",
-    tags=["RF Analysis"],
-)
-
-
-MAX_UPLOAD_SIZE = 100 * 1024 * 1024
+router = APIRouter(prefix="/api", tags=["RF Analysis"])
 
 
 @router.get("/health")
-def health() -> dict:
-    """
-    Basic backend health check.
-    """
-
+def health_check():
     return {
         "status": "ok",
         "service": "SAGE-RF",
@@ -39,145 +21,101 @@ def health() -> dict:
     }
 
 
-@router.post(
-    "/analyze",
-    response_model=AnalysisResult,
-)
-async def analyze_upload(
+@router.post("/analyze", response_model=AnalysisResult)
+async def analyze_file(
     file: UploadFile = File(...),
-    iq_sample_rate: float | None = Form(
-        default=None,
-    ),
-    max_samples: int | None = Form(
-        default=None,
-    ),
-) -> AnalysisResult:
+    iq_sample_rate: float | None = Form(None),
+):
     """
-    Upload an IQ or WAV recording and run
-    the SAGE-RF spectral analysis pipeline.
+    Analyze an uploaded RF signal.
+
+    Supported formats:
+    - .iq: raw complex64 IQ samples
+    - .wav: WAV signal files
+
+    Raw IQ files require iq_sample_rate.
     """
 
-    if not file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="Uploaded file must have a filename.",
-        )
-
-    filename = Path(
-        file.filename
-    ).name
-
-    suffix = Path(
-        filename
-    ).suffix.lower()
+    filename = file.filename or ""
+    suffix = Path(filename).suffix.lower()
 
     if suffix not in {".iq", ".wav"}:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Unsupported file format. "
-                "SAGE-RF currently accepts .iq and .wav files."
-            ),
+            detail="Unsupported file format. Use .iq or .wav",
         )
 
-    signal_id = str(uuid4())
-
-    temporary_path: Path | None = None
+    temporary_path = None
 
     try:
-        with tempfile.NamedTemporaryFile(
+        # Save uploaded file to a temporary file.
+        with NamedTemporaryFile(
             suffix=suffix,
             delete=False,
-        ) as temporary_file:
+        ) as temp:
+            temp.write(await file.read())
+            temporary_path = temp.name
 
-            temporary_path = Path(
-                temporary_file.name
-            )
-
-            total_bytes = 0
-
-            while True:
-                chunk = await file.read(1024 * 1024)
-
-                if not chunk:
-                    break
-
-                total_bytes += len(chunk)
-
-                if total_bytes > MAX_UPLOAD_SIZE:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            "File is too large. "
-                            "Maximum upload size is 100 MB."
-                        ),
-                    )
-
-                temporary_file.write(chunk)
-
-        loaded = load_signal(
+        # Load the signal.
+        signal = load_signal(
             temporary_path,
             iq_sample_rate=iq_sample_rate,
-            max_samples=max_samples,
         )
 
-        metadata = SignalMetadata(
-            source_format=loaded.source_format,
-            sample_rate=loaded.sample_rate,
-            sample_count=loaded.sample_count,
-            duration_seconds=loaded.duration_seconds,
-            peak_amplitude=loaded.peak_amplitude,
-            mean_power=loaded.mean_power,
-        )
+        # Build metadata from LoadedSignal.
+        metadata = {
+            "source_format": signal.source_format,
+            "sample_rate": signal.sample_rate,
+            "sample_count": signal.sample_count,
+            "duration_seconds": signal.duration_seconds,
+        }
 
+        # Add optional signal statistics when available.
+        if hasattr(signal, "samples"):
+            samples = signal.samples
+
+            if len(samples) > 0:
+                import numpy as np
+
+                amplitudes = np.abs(samples)
+
+                metadata["peak_amplitude"] = float(
+                    np.max(amplitudes)
+                )
+
+                metadata["mean_power"] = float(
+                    np.mean(amplitudes ** 2)
+                )
+
+        # Run spectral analysis and waterfall analysis.
         analysis = analyze_signal(
-            samples=loaded.samples,
-            sample_rate=loaded.sample_rate,
+            signal.samples,
+            signal.sample_rate,
         )
 
-        spectrum = SpectrumResult(
-            **analysis["spectrum"]
+        # Run modulation classification.
+        modulation = analyze_modulation(
+            signal.samples,
+            signal.sample_rate,
         )
 
-        waterfall = WaterfallResult(
-            **analysis["waterfall"]
-        )
-
-        parameters = SignalParameters(
-            sampling_frequency=loaded.sample_rate,
-            bandwidth=(
-                analysis["spectrum"]
-                ["occupied_bandwidth_hz"]
-            ),
-            snr_db=(
-                analysis["spectrum"]
-                ["snr_db"]
-            ),
-        )
-
-        return AnalysisResult(
-            status="success",
-            signal_id=signal_id,
-            filename=filename,
-            metadata=metadata,
-            parameters=parameters,
-            spectrum=spectrum,
-            waterfall=waterfall,
-            diagnostics={
-                "pipeline": [
-                    "file_ingestion",
-                    "signal_normalization",
-                    "welch_psd",
-                    "spectral_feature_extraction",
-                    "stft_waterfall",
-                ],
-                "backend": "FastAPI",
-                "dsp_engine": "GNU Radio + SciPy",
+        # Build final API response.
+        result = {
+            "status": "success",
+            "filename": filename,
+            "metadata": metadata,
+            "parameters": None,
+            "spectrum": analysis["spectrum"],
+            "waterfall": analysis["waterfall"],
+            "modulation": modulation["classification"],
+            "diagnostics": {
+                **analysis.get("diagnostics", {}),
+                "modulation_classifier": "explainable_baseline",
             },
-        )
+            "errors": [],
+        }
 
-    except HTTPException:
-        raise
+        return result
 
     except Exception as exc:
         raise HTTPException(
@@ -186,9 +124,6 @@ async def analyze_upload(
         ) from exc
 
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(
-                missing_ok=True
-            )
-
-        await file.close()
+        # Always remove the temporary uploaded file.
+        if temporary_path:
+            Path(temporary_path).unlink(missing_ok=True)
