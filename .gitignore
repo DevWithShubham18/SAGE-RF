@@ -1,0 +1,64 @@
+# ============================================================
+# SAGE-RF Git Ignore
+# ============================================================
+
+# Python virtual environments
+.venv/
+.rf-env/
+.env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# RF data - NEVER commit raw captures
+data/raw/
+data/uploads/
+data/processed/
+data/results/
+
+# Large signal files
+*.wav
+*.iq
+*.cf32
+*.cfile
+*.bin
+
+# ML artifacts
+ml/checkpoints/
+ml/models/
+ml/datasets/
+
+# GNU Radio generated/build files
+build/
+cmake-build-*/
+*.grc~
+
+# Python distributions
+*.egg-info/
+dist/
