@@ -1,228 +1,264 @@
+from __future__ import annotations
+
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
-import wave
 
 import numpy as np
 
 
-SupportedFormat = Literal["wav", "iq"]
+SUPPORTED_FORMATS = {".iq", ".wav"}
 
 
 @dataclass
-class RFSignal:
-    """
-    Unified representation of a loaded RF signal.
-
-    All downstream DSP components work with this object
-    instead of dealing directly with WAV/IQ file formats.
-    """
+class LoadedSignal:
+    """Normalized signal representation used by the SAGE-RF pipeline."""
 
     samples: np.ndarray
     sample_rate: float
-    source_format: SupportedFormat
+    source_format: str
     sample_count: int
     duration_seconds: float
+    peak_amplitude: float
+    mean_power: float
+    filename: str | None = None
 
 
-def detect_format(file_path: str | Path) -> SupportedFormat:
-    """
-    Determine the supported RF input format from the file extension.
-    """
-
-    path = Path(file_path)
-    extension = path.suffix.lower()
-
-    if extension == ".wav":
-        return "wav"
-
-    if extension in {".iq", ".cfile", ".cf32"}:
-        return "iq"
-
-    raise ValueError(
-        f"Unsupported RF file format: {extension or '<no extension>'}"
-    )
+def _validate_sample_limit(max_samples: int | None) -> None:
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be greater than zero")
 
 
 def read_iq_file(
-    file_path: str | Path,
-    sample_rate: float,
-    dtype: str = "complex64",
-) -> RFSignal:
+    path: str | Path,
+    max_samples: int | None = None,
+) -> np.ndarray:
     """
-    Read a raw interleaved complex IQ file.
+    Read interleaved float32 complex IQ data.
 
-    The initial reader assumes complex64:
-        float32 I
-        float32 Q
-        float32 I
-        float32 Q
-        ...
+    Expected layout:
 
-    The sample rate must be supplied separately because raw IQ
-    files normally do not contain their own sample-rate metadata.
+        I0, Q0, I1, Q1, ...
+
+    The returned array is complex64.
     """
 
-    path = Path(file_path)
+    file_path = Path(path)
 
-    if not path.exists():
-        raise FileNotFoundError(f"IQ file not found: {path}")
+    if not file_path.exists():
+        raise FileNotFoundError(f"IQ file not found: {file_path}")
 
-    if sample_rate <= 0:
-        raise ValueError("sample_rate must be greater than zero")
+    _validate_sample_limit(max_samples)
 
-    if dtype != "complex64":
+    raw = np.fromfile(file_path, dtype=np.float32)
+
+    if raw.size == 0:
+        raise ValueError("IQ file is empty")
+
+    if raw.size % 2 != 0:
         raise ValueError(
-            "Only complex64 IQ input is supported by this initial reader."
+            "IQ file contains an odd number of float32 values; "
+            "expected interleaved I/Q pairs."
         )
 
-    samples = np.fromfile(path, dtype=np.complex64)
+    if max_samples is not None:
+        raw = raw[: max_samples * 2]
 
-    sample_count = int(samples.size)
+    i = raw[0::2]
+    q = raw[1::2]
 
-    duration_seconds = (
-        sample_count / sample_rate
-        if sample_count > 0
-        else 0.0
-    )
-
-    return RFSignal(
-        samples=samples,
-        sample_rate=float(sample_rate),
-        source_format="iq",
-        sample_count=sample_count,
-        duration_seconds=duration_seconds,
-    )
+    return (i + 1j * q).astype(np.complex64)
 
 
-def read_wav_file(file_path: str | Path) -> RFSignal:
+def read_wav_file(
+    path: str | Path,
+    max_samples: int | None = None,
+) -> tuple[np.ndarray, int]:
     """
-    Read a PCM WAV file and return the unified RFSignal object.
+    Read a WAV file and normalize it to complex64.
 
-    Mono WAV recordings are converted to complex samples with
-    zero imaginary component.
+    Mono WAV:
+        real samples -> complex(real, 0)
 
-    Stereo WAV recordings are interpreted as:
-        channel 0 → I
-        channel 1 → Q
+    Stereo WAV:
+        channel 0 -> I
+        channel 1 -> Q
 
-    This gives us a useful initial convention for RF recordings
-    stored as two-channel WAV.
+    This lets the rest of the DSP pipeline work with one
+    unified complex representation.
     """
 
-    path = Path(file_path)
+    file_path = Path(path)
 
-    if not path.exists():
-        raise FileNotFoundError(f"WAV file not found: {path}")
+    if not file_path.exists():
+        raise FileNotFoundError(f"WAV file not found: {file_path}")
 
-    with wave.open(str(path), "rb") as wav:
+    _validate_sample_limit(max_samples)
+
+    with wave.open(str(file_path), "rb") as wav:
         channels = wav.getnchannels()
         sample_width = wav.getsampwidth()
         sample_rate = wav.getframerate()
         frame_count = wav.getnframes()
-        raw_data = wav.readframes(frame_count)
+
+        if channels not in (1, 2):
+            raise ValueError(
+                f"Unsupported WAV channel count: {channels}. "
+                "Only mono and stereo are supported."
+            )
+
+        if sample_width not in (1, 2, 3, 4):
+            raise ValueError(
+                f"Unsupported WAV sample width: {sample_width} bytes."
+            )
+
+        frames_to_read = frame_count
+
+        if max_samples is not None:
+            frames_to_read = min(frame_count, max_samples)
+
+        raw = wav.readframes(frames_to_read)
 
     if sample_width == 1:
-        dtype = np.uint8
+        # WAV 8-bit PCM is unsigned.
+        data = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+        data = (data - 128.0) / 128.0
+
     elif sample_width == 2:
-        dtype = np.int16
-    elif sample_width == 4:
-        dtype = np.int32
-    else:
-        raise ValueError(
-            f"Unsupported PCM sample width: {sample_width} bytes"
+        data = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        data /= 32768.0
+
+    elif sample_width == 3:
+        # 24-bit little-endian PCM.
+        bytes_data = np.frombuffer(raw, dtype=np.uint8)
+
+        if bytes_data.size % 3 != 0:
+            raise ValueError("Invalid 24-bit WAV data length.")
+
+        triplets = bytes_data.reshape(-1, 3)
+
+        values = (
+            triplets[:, 0].astype(np.int32)
+            | (triplets[:, 1].astype(np.int32) << 8)
+            | (triplets[:, 2].astype(np.int32) << 16)
         )
 
-    samples = np.frombuffer(raw_data, dtype=dtype)
+        # Sign extension.
+        negative = values & 0x800000
+        values[negative != 0] -= 1 << 24
+
+        data = values.astype(np.float32) / 8388608.0
+
+    else:
+        data = np.frombuffer(raw, dtype=np.int32).astype(np.float32)
+        data /= 2147483648.0
 
     if channels == 1:
-        samples = samples.astype(np.float32)
-
-        # Normalize PCM amplitude.
-        if np.issubdtype(dtype, np.integer):
-            max_value = float(np.iinfo(dtype).max)
-            if max_value > 0:
-                samples /= max_value
-
-        samples = samples.astype(np.complex64)
-
-    elif channels == 2:
-        samples = samples.reshape(-1, 2).astype(np.float32)
-
-        if np.issubdtype(dtype, np.integer):
-            max_value = float(np.iinfo(dtype).max)
-            if max_value > 0:
-                samples /= max_value
-
-        samples = (
-            samples[:, 0] + 1j * samples[:, 1]
-        ).astype(np.complex64)
+        samples = data.astype(np.complex64)
 
     else:
-        raise ValueError(
-            "Only mono and stereo WAV files are supported."
-        )
+        if data.size % 2 != 0:
+            raise ValueError("Stereo WAV contains incomplete I/Q frame.")
 
-    sample_count = int(samples.size)
+        i = data[0::2]
+        q = data[1::2]
 
-    duration_seconds = (
-        sample_count / sample_rate
-        if sample_count > 0
-        else 0.0
-    )
+        samples = (i + 1j * q).astype(np.complex64)
 
-    return RFSignal(
-        samples=samples,
-        sample_rate=float(sample_rate),
-        source_format="wav",
-        sample_count=sample_count,
-        duration_seconds=duration_seconds,
-    )
+    if samples.size == 0:
+        raise ValueError("WAV file contains no samples.")
 
-
-def load_signal(
-    file_path: str | Path,
-    iq_sample_rate: float | None = None,
-) -> RFSignal:
-    """
-    Automatically load a supported WAV or IQ file.
-
-    For raw IQ files, iq_sample_rate is required because
-    the file itself normally does not contain this metadata.
-    """
-
-    source_format = detect_format(file_path)
-
-    if source_format == "wav":
-        return read_wav_file(file_path)
-
-    if iq_sample_rate is None:
-        raise ValueError(
-            "iq_sample_rate is required when loading a raw IQ file."
-        )
-
-    return read_iq_file(
-        file_path,
-        sample_rate=iq_sample_rate,
-    )
+    return samples, sample_rate
 
 
 def get_iq_metadata(samples: np.ndarray) -> dict:
-    """
-    Calculate basic metadata from complex IQ samples.
-    """
+    """Calculate basic signal statistics."""
 
-    if samples.size == 0:
-        return {
-            "sample_count": 0,
-            "peak_amplitude": 0.0,
-            "mean_power": 0.0,
-        }
+    x = np.asarray(samples)
 
-    power = np.abs(samples) ** 2
+    if x.size == 0:
+        raise ValueError("Cannot calculate metadata for empty signal.")
+
+    amplitude = np.abs(x)
 
     return {
-        "sample_count": int(samples.size),
-        "peak_amplitude": float(np.max(np.abs(samples))),
-        "mean_power": float(np.mean(power)),
+        "sample_count": int(x.size),
+        "peak_amplitude": float(np.max(amplitude)),
+        "mean_power": float(np.mean(amplitude**2)),
     }
+
+
+def load_signal(
+    path: str | Path,
+    iq_sample_rate: float | None = None,
+    max_samples: int | None = None,
+) -> LoadedSignal:
+    """
+    Unified signal loader for .IQ and .WAV files.
+
+    Parameters
+    ----------
+    path:
+        Input file.
+
+    iq_sample_rate:
+        Required for raw IQ files because raw IQ files do not
+        inherently contain their sampling frequency.
+
+    max_samples:
+        Optional safety/performance limit.
+    """
+
+    file_path = Path(path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"Signal file not found: {file_path}")
+
+    suffix = file_path.suffix.lower()
+
+    if suffix not in SUPPORTED_FORMATS:
+        raise ValueError(
+            f"Unsupported signal format '{suffix}'. "
+            f"Supported formats: {sorted(SUPPORTED_FORMATS)}"
+        )
+
+    if suffix == ".iq":
+        if iq_sample_rate is None:
+            raise ValueError(
+                "iq_sample_rate is required when loading a raw IQ file."
+            )
+
+        if iq_sample_rate <= 0:
+            raise ValueError("iq_sample_rate must be greater than zero.")
+
+        samples = read_iq_file(
+            file_path,
+            max_samples=max_samples,
+        )
+
+        sample_rate = float(iq_sample_rate)
+        source_format = "iq"
+
+    else:
+        samples, wav_sample_rate = read_wav_file(
+            file_path,
+            max_samples=max_samples,
+        )
+
+        sample_rate = float(wav_sample_rate)
+        source_format = "wav"
+
+    metadata = get_iq_metadata(samples)
+
+    sample_count = metadata["sample_count"]
+
+    return LoadedSignal(
+        samples=samples,
+        sample_rate=sample_rate,
+        source_format=source_format,
+        sample_count=sample_count,
+        duration_seconds=float(sample_count / sample_rate),
+        peak_amplitude=metadata["peak_amplitude"],
+        mean_power=metadata["mean_power"],
+        filename=file_path.name,
+    )
