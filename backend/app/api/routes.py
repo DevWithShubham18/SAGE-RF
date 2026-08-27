@@ -4,8 +4,8 @@ from tempfile import NamedTemporaryFile
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from backend.app.analysis.features import analyze_signal
+from backend.app.analysis.signal_analysis import analyze_all_detected_signals
 from backend.app.dsp.detector import detect_signals
-from backend.app.dsp.modulation import analyze_modulation
 from backend.app.io.readers import load_signal
 
 
@@ -27,21 +27,17 @@ async def analyze_file(
     iq_sample_rate: float | None = Form(None),
 ):
     """
-    Analyze an uploaded RF signal.
+    End-to-end RF analysis API.
 
-    Supported formats:
-    - .iq: raw complex64 IQ samples
-    - .wav: WAV signal files
-
-    Raw IQ files require iq_sample_rate.
-
-    The analysis pipeline performs:
-    1. File ingestion
-    2. Signal normalization
-    3. Spectral analysis
-    4. Waterfall/STFT analysis
-    5. Modulation classification
-    6. RF signal detection
+    Pipeline:
+        1. File ingestion
+        2. Signal normalization
+        3. Spectrum analysis
+        4. Waterfall/STFT analysis
+        5. RF signal detection
+        6. Per-signal frequency isolation
+        7. Per-signal metrics
+        8. Per-signal modulation classification
     """
 
     filename = file.filename or ""
@@ -56,9 +52,9 @@ async def analyze_file(
     temporary_path = None
 
     try:
-        # ---------------------------------------------------------
-        # 1. Save uploaded file to a temporary location
-        # ---------------------------------------------------------
+        # =========================================================
+        # 1. Save uploaded file
+        # =========================================================
         with NamedTemporaryFile(
             suffix=suffix,
             delete=False,
@@ -66,122 +62,217 @@ async def analyze_file(
             temp.write(await file.read())
             temporary_path = temp.name
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 2. Load signal
-        # ---------------------------------------------------------
+        # =========================================================
         signal = load_signal(
             temporary_path,
             iq_sample_rate=iq_sample_rate,
         )
 
-        # ---------------------------------------------------------
-        # 3. Build signal metadata
-        # ---------------------------------------------------------
+        samples = signal.samples
+        sample_rate = float(signal.sample_rate)
+
+        # =========================================================
+        # 3. Build metadata
+        # =========================================================
         metadata = {
             "source_format": signal.source_format,
-            "sample_rate": signal.sample_rate,
-            "sample_count": signal.sample_count,
-            "duration_seconds": signal.duration_seconds,
+            "sample_rate": sample_rate,
+            "sample_count": int(signal.sample_count),
+            "duration_seconds": float(
+                signal.duration_seconds
+            ),
         }
 
-        if hasattr(signal, "samples"):
-            samples = signal.samples
+        if samples.size > 0:
+            import numpy as np
 
-            if len(samples) > 0:
-                import numpy as np
+            amplitudes = np.abs(samples)
 
-                amplitudes = np.abs(samples)
+            metadata["peak_amplitude"] = float(
+                np.max(amplitudes)
+            )
 
-                metadata["peak_amplitude"] = float(
-                    np.max(amplitudes)
-                )
+            metadata["mean_power"] = float(
+                np.mean(amplitudes ** 2)
+            )
 
-                metadata["mean_power"] = float(
-                    np.mean(amplitudes ** 2)
-                )
-
-        # ---------------------------------------------------------
-        # 4. Spectral + waterfall analysis
-        # ---------------------------------------------------------
+        # =========================================================
+        # 4. Global spectrum + waterfall
+        # =========================================================
         analysis = analyze_signal(
-            signal.samples,
-            signal.sample_rate,
+            samples,
+            sample_rate,
         )
 
-        # ---------------------------------------------------------
-        # 5. Modulation classification
-        # ---------------------------------------------------------
-        modulation = analyze_modulation(
-            signal.samples,
-            signal.sample_rate,
-        )
-
-        modulation_classification = modulation.get(
-            "classification"
-        )
-
-        # ---------------------------------------------------------
-        # 6. RF signal detection
-        # ---------------------------------------------------------
+        # =========================================================
+        # 5. Detect RF signals
+        # =========================================================
         detection = detect_signals(
-            signal.samples,
-            signal.sample_rate,
+            samples,
+            sample_rate,
         )
 
-        detection_candidates = []
+        candidates = detection.get(
+            "candidates",
+            [],
+        )
 
-        for candidate in detection.get("candidates", []):
-            candidate_result = dict(candidate)
+        # =========================================================
+        # 6. Analyze every detected signal independently
+        # =========================================================
+        per_signal = analyze_all_detected_signals(
+            samples=samples,
+            sample_rate=sample_rate,
+            candidates=candidates,
+        )
 
-            # -----------------------------------------------------
-            # Associate the overall modulation classification with
-            # each detected RF candidate.
-            #
-            # The current baseline classifier operates on the
-            # complete uploaded signal, so this is intentionally
-            # marked as signal-level modulation evidence.
-            # -----------------------------------------------------
-            if modulation_classification:
-                candidate_result["modulation"] = (
-                    modulation_classification.get("modulation")
+        detailed_signals = per_signal.get(
+            "signals",
+            [],
+        )
+
+        # =========================================================
+        # 7. Enrich detector candidates
+        #
+        # IMPORTANT:
+        # The API keeps modulation and modulation_confidence
+        # directly on each candidate because this is part of the
+        # public candidate response contract.
+        # =========================================================
+        enriched_candidates = []
+
+        for index, candidate in enumerate(candidates):
+            enriched = dict(candidate)
+
+            if index < len(detailed_signals):
+                detailed = detailed_signals[index]
+
+                metrics = detailed.get(
+                    "metrics",
+                    {},
                 )
 
-                candidate_result["modulation_confidence"] = (
-                    modulation_classification.get("confidence")
+                modulation = detailed.get(
+                    "modulation"
                 )
 
-            detection_candidates.append(candidate_result)
+                # -------------------------------------------------
+                # Detailed metrics
+                # -------------------------------------------------
+                enriched["metrics"] = metrics
 
+                enriched["samples_analyzed"] = int(
+                    detailed.get(
+                        "samples_analyzed",
+                        0,
+                    )
+                )
+
+                # -------------------------------------------------
+                # Modulation classification
+                # -------------------------------------------------
+                if modulation is not None:
+                    enriched["modulation"] = modulation.get(
+                        "modulation"
+                    )
+
+                    enriched["modulation_confidence"] = (
+                        modulation.get("confidence")
+                    )
+
+                    # Preserve complete classification details too.
+                    enriched["modulation_analysis"] = modulation
+                else:
+                    enriched["modulation"] = None
+                    enriched["modulation_confidence"] = None
+
+            else:
+                enriched["metrics"] = {}
+                enriched["samples_analyzed"] = 0
+                enriched["modulation"] = None
+                enriched["modulation_confidence"] = None
+                enriched["modulation_analysis"] = None
+
+            enriched_candidates.append(
+                enriched
+            )
+
+        # =========================================================
+        # 8. Top-level modulation
+        #
+        # For backward compatibility, expose the first detected
+        # signal's modulation classification at the top level.
+        # =========================================================
+        top_level_modulation = None
+
+        if detailed_signals:
+            top_level_modulation = detailed_signals[0].get(
+                "modulation"
+            )
+
+        # =========================================================
+        # 9. Detection response
+        # =========================================================
         detections = {
-            "candidate_count": len(detection_candidates),
-            "candidates": detection_candidates,
+            "candidate_count": len(
+                enriched_candidates
+            ),
+            "candidates": enriched_candidates,
+            "signal_count": len(
+                detailed_signals
+            ),
+            "signals": detailed_signals,
         }
 
-        # ---------------------------------------------------------
-        # 7. Build final API response
-        # ---------------------------------------------------------
+        # =========================================================
+        # 10. Final response
+        # =========================================================
         result = {
             "status": "success",
             "filename": filename,
             "metadata": metadata,
             "parameters": None,
-            "spectrum": analysis.get("spectrum"),
-            "waterfall": analysis.get("waterfall"),
-            "modulation": modulation_classification,
+
+            "spectrum": analysis.get(
+                "spectrum"
+            ),
+
+            "waterfall": analysis.get(
+                "waterfall"
+            ),
+
+            "modulation": top_level_modulation,
+
             "detections": detections,
+
             "diagnostics": {
-                **analysis.get("diagnostics", {}),
-                "modulation_classifier": (
-                    "explainable_baseline"
+                **analysis.get(
+                    "diagnostics",
+                    {},
                 ),
+
                 "signal_detector": (
                     "spectral_threshold_detector"
                 ),
+
+                "per_signal_analysis": (
+                    "fft_frequency_isolation"
+                ),
+
+                "per_signal_modulation": (
+                    "explainable_baseline"
+                ),
             },
+
             "errors": [],
         }
 
         return result
+
+    except HTTPException:
+        raise
 
     except Exception as exc:
         raise HTTPException(
@@ -190,10 +281,12 @@ async def analyze_file(
         ) from exc
 
     finally:
-        # ---------------------------------------------------------
-        # 8. Always remove temporary uploaded file
-        # ---------------------------------------------------------
+        # =========================================================
+        # 11. Always clean up temporary file
+        # =========================================================
         if temporary_path:
-            Path(temporary_path).unlink(
+            Path(
+                temporary_path
+            ).unlink(
                 missing_ok=True
             )
