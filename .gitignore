@@ -62,3 +62,5 @@ cmake-build-*/
 # Python distributions
 *.egg-info/
 dist/
+# Local project toolchain
+.tools/
