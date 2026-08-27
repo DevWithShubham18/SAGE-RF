@@ -1,85 +1,154 @@
-from typing import Optional
+from __future__ import annotations
+
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 class SignalParameters(BaseModel):
-    """Parameters extracted from an RF signal."""
+    """Detected or user-supplied RF signal parameters."""
 
-    sampling_frequency: Optional[float] = Field(
+    sampling_frequency: float | None = Field(
         default=None,
-        description="Sample rate in samples per second.",
+        description="Signal sampling frequency in samples/second.",
     )
 
-    center_frequency: Optional[float] = Field(
+    center_frequency: float | None = Field(
         default=None,
-        description="Signal center frequency in Hz.",
+        description="RF center frequency in Hz.",
     )
 
-    bandwidth: Optional[float] = Field(
+    bandwidth: float | None = Field(
         default=None,
         description="Estimated occupied bandwidth in Hz.",
     )
 
-    snr_db: Optional[float] = Field(
+    snr_db: float | None = Field(
         default=None,
         description="Estimated signal-to-noise ratio in dB.",
     )
 
-    modulation: Optional[str] = Field(
+    modulation: str | None = Field(
         default=None,
         description="Detected modulation type.",
     )
 
-    symbol_rate: Optional[float] = Field(
+    symbol_rate: float | None = Field(
         default=None,
-        description="Estimated symbol rate in symbols per second.",
+        description="Estimated symbol rate in symbols/second.",
     )
 
-    fec: Optional[str] = Field(
+    fec: str | None = Field(
         default=None,
         description="Detected forward error correction scheme.",
     )
 
-    interleaving: Optional[str] = Field(
+    interleaving: str | None = Field(
         default=None,
         description="Detected interleaving scheme.",
     )
 
-    confidence: Optional[float] = Field(
+    confidence: float | None = Field(
         default=None,
         ge=0.0,
         le=1.0,
-        description="Overall parameter detection confidence.",
+        description="Overall detection confidence.",
     )
 
 
-class SignalAnalysisResult(BaseModel):
-    """Complete result returned by the SAGE-RF analysis pipeline."""
+class SignalMetadata(BaseModel):
+    """Basic information about the uploaded signal."""
 
-    signal_id: str = Field(
-        description="Unique identifier for the analyzed signal.",
-    )
+    source_format: Literal["iq", "wav"] | None = None
 
-    source_format: str = Field(
-        description="Input format, such as WAV or IQ.",
-    )
+    sample_rate: float | None = None
 
-    duration_seconds: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        description="Duration of the analyzed recording.",
-    )
-
-    sample_count: Optional[int] = Field(
-        default=None,
+    sample_count: int = Field(
+        default=0,
         ge=0,
-        description="Number of samples analyzed.",
     )
 
-    parameters: SignalParameters
+    duration_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+    )
 
-    processing_status: str = Field(
-        default="completed",
-        description="Current processing state.",
+    peak_amplitude: float | None = None
+
+    mean_power: float | None = None
+
+
+class SpectrumResult(BaseModel):
+    """Frequency-domain signal measurements."""
+
+    peak_frequency_hz: float | None = None
+
+    peak_power_db: float | None = None
+
+    noise_floor_db: float | None = None
+
+    snr_db: float | None = None
+
+    occupied_bandwidth_hz: float | None = None
+
+    occupied_lower_hz: float | None = None
+
+    occupied_upper_hz: float | None = None
+
+    frequency_min_hz: float | None = None
+
+    frequency_max_hz: float | None = None
+
+    frequency_bins: int = 0
+
+    frequency_resolution_hz: float | None = None
+
+
+class WaterfallResult(BaseModel):
+    """Time-frequency representation for the frontend."""
+
+    frequencies_hz: list[float] = Field(
+        default_factory=list,
+    )
+
+    times_seconds: list[float] = Field(
+        default_factory=list,
+    )
+
+    power_db: list[list[float]] = Field(
+        default_factory=list,
+    )
+
+    time_bins: int = 0
+
+    frequency_bins: int = 0
+
+
+class AnalysisResult(BaseModel):
+    """Complete SAGE-RF signal analysis result."""
+
+    status: Literal[
+        "success",
+        "partial",
+        "error",
+    ] = "success"
+
+    signal_id: str | None = None
+
+    filename: str | None = None
+
+    metadata: SignalMetadata | None = None
+
+    parameters: SignalParameters | None = None
+
+    spectrum: SpectrumResult | None = None
+
+    waterfall: WaterfallResult | None = None
+
+    diagnostics: dict[str, Any] = Field(
+        default_factory=dict,
+    )
+
+    errors: list[str] = Field(
+        default_factory=list,
     )
