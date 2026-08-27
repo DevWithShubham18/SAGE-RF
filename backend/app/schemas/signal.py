@@ -12,7 +12,11 @@ class SignalParameters(BaseModel):
     symbol_rate: Optional[float] = None
     fec: Optional[str] = None
     interleaving: Optional[str] = None
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
 
 
 class SignalMetadata(BaseModel):
@@ -66,9 +70,42 @@ class ModulationEvidence(BaseModel):
 
 class ModulationClassification(BaseModel):
     modulation: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
     evidence: ModulationEvidence
-    alternatives: List[ModulationAlternative] = Field(default_factory=list)
+    alternatives: List[ModulationAlternative] = Field(
+        default_factory=list
+    )
+
+
+class DetectionCandidate(BaseModel):
+    lower_frequency_hz: float
+    upper_frequency_hz: float
+    center_frequency_hz: float
+    bandwidth_hz: float
+    peak_frequency_hz: float
+    peak_power_db: float
+    noise_floor_db: float
+    snr_db: float
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+    modulation: Optional[str] = None
+    modulation_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class DetectionResult(BaseModel):
+    candidate_count: int = 0
+    candidates: List[DetectionCandidate] = Field(
+        default_factory=list
+    )
 
 
 class AnalysisResult(BaseModel):
@@ -83,6 +120,7 @@ class AnalysisResult(BaseModel):
     spectrum: Optional[SpectrumResult] = None
     waterfall: Optional[WaterfallResult] = None
     modulation: Optional[ModulationClassification] = None
+    detections: Optional[DetectionResult] = None
 
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
     errors: List[str] = Field(default_factory=list)

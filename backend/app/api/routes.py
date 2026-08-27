@@ -4,9 +4,9 @@ from tempfile import NamedTemporaryFile
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from backend.app.analysis.features import analyze_signal
+from backend.app.dsp.detector import detect_signals
 from backend.app.dsp.modulation import analyze_modulation
 from backend.app.io.readers import load_signal
-from backend.app.schemas.signal import AnalysisResult
 
 
 router = APIRouter(prefix="/api", tags=["RF Analysis"])
@@ -21,7 +21,7 @@ def health_check():
     }
 
 
-@router.post("/analyze", response_model=AnalysisResult)
+@router.post("/analyze")
 async def analyze_file(
     file: UploadFile = File(...),
     iq_sample_rate: float | None = Form(None),
@@ -34,6 +34,14 @@ async def analyze_file(
     - .wav: WAV signal files
 
     Raw IQ files require iq_sample_rate.
+
+    The analysis pipeline performs:
+    1. File ingestion
+    2. Signal normalization
+    3. Spectral analysis
+    4. Waterfall/STFT analysis
+    5. Modulation classification
+    6. RF signal detection
     """
 
     filename = file.filename or ""
@@ -48,7 +56,9 @@ async def analyze_file(
     temporary_path = None
 
     try:
-        # Save uploaded file to a temporary file.
+        # ---------------------------------------------------------
+        # 1. Save uploaded file to a temporary location
+        # ---------------------------------------------------------
         with NamedTemporaryFile(
             suffix=suffix,
             delete=False,
@@ -56,13 +66,17 @@ async def analyze_file(
             temp.write(await file.read())
             temporary_path = temp.name
 
-        # Load the signal.
+        # ---------------------------------------------------------
+        # 2. Load signal
+        # ---------------------------------------------------------
         signal = load_signal(
             temporary_path,
             iq_sample_rate=iq_sample_rate,
         )
 
-        # Build metadata from LoadedSignal.
+        # ---------------------------------------------------------
+        # 3. Build signal metadata
+        # ---------------------------------------------------------
         metadata = {
             "source_format": signal.source_format,
             "sample_rate": signal.sample_rate,
@@ -70,7 +84,6 @@ async def analyze_file(
             "duration_seconds": signal.duration_seconds,
         }
 
-        # Add optional signal statistics when available.
         if hasattr(signal, "samples"):
             samples = signal.samples
 
@@ -87,30 +100,83 @@ async def analyze_file(
                     np.mean(amplitudes ** 2)
                 )
 
-        # Run spectral analysis and waterfall analysis.
+        # ---------------------------------------------------------
+        # 4. Spectral + waterfall analysis
+        # ---------------------------------------------------------
         analysis = analyze_signal(
             signal.samples,
             signal.sample_rate,
         )
 
-        # Run modulation classification.
+        # ---------------------------------------------------------
+        # 5. Modulation classification
+        # ---------------------------------------------------------
         modulation = analyze_modulation(
             signal.samples,
             signal.sample_rate,
         )
 
-        # Build final API response.
+        modulation_classification = modulation.get(
+            "classification"
+        )
+
+        # ---------------------------------------------------------
+        # 6. RF signal detection
+        # ---------------------------------------------------------
+        detection = detect_signals(
+            signal.samples,
+            signal.sample_rate,
+        )
+
+        detection_candidates = []
+
+        for candidate in detection.get("candidates", []):
+            candidate_result = dict(candidate)
+
+            # -----------------------------------------------------
+            # Associate the overall modulation classification with
+            # each detected RF candidate.
+            #
+            # The current baseline classifier operates on the
+            # complete uploaded signal, so this is intentionally
+            # marked as signal-level modulation evidence.
+            # -----------------------------------------------------
+            if modulation_classification:
+                candidate_result["modulation"] = (
+                    modulation_classification.get("modulation")
+                )
+
+                candidate_result["modulation_confidence"] = (
+                    modulation_classification.get("confidence")
+                )
+
+            detection_candidates.append(candidate_result)
+
+        detections = {
+            "candidate_count": len(detection_candidates),
+            "candidates": detection_candidates,
+        }
+
+        # ---------------------------------------------------------
+        # 7. Build final API response
+        # ---------------------------------------------------------
         result = {
             "status": "success",
             "filename": filename,
             "metadata": metadata,
             "parameters": None,
-            "spectrum": analysis["spectrum"],
-            "waterfall": analysis["waterfall"],
-            "modulation": modulation["classification"],
+            "spectrum": analysis.get("spectrum"),
+            "waterfall": analysis.get("waterfall"),
+            "modulation": modulation_classification,
+            "detections": detections,
             "diagnostics": {
                 **analysis.get("diagnostics", {}),
-                "modulation_classifier": "explainable_baseline",
+                "modulation_classifier": (
+                    "explainable_baseline"
+                ),
+                "signal_detector": (
+                    "spectral_threshold_detector"
+                ),
             },
             "errors": [],
         }
@@ -124,6 +190,10 @@ async def analyze_file(
         ) from exc
 
     finally:
-        # Always remove the temporary uploaded file.
+        # ---------------------------------------------------------
+        # 8. Always remove temporary uploaded file
+        # ---------------------------------------------------------
         if temporary_path:
-            Path(temporary_path).unlink(missing_ok=True)
+            Path(temporary_path).unlink(
+                missing_ok=True
+            )
