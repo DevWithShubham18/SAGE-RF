@@ -64,3 +64,6 @@ cmake-build-*/
 dist/
 # Local project toolchain
 .tools/
+
+# GNU Radio local preferences
+.gnuradio/
