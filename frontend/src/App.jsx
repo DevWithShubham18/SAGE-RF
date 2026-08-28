@@ -23,6 +23,7 @@ import {
   YAxis,
 } from "recharts";
 import "./styles.css";
+import Workspace from "./components/workspace/Workspace.jsx";
 
 function RFCore() {
   const group = useRef();
@@ -196,7 +197,47 @@ function App() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [backendOnline, setBackendOnline] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioUrl, setAudioUrl] = useState("");
+
+  // Real WAV waveform data
+  const [waveformSamples, setWaveformSamples] = useState([]);
+  const [audioDuration, setAudioDuration] = useState(0);
+
+  const audioRef = useRef(null);
   const fileInput = useRef(null);
+
+  useEffect(() => {
+    const updateScrollProgress = () => {
+      const maxScroll =
+        document.documentElement.scrollHeight - window.innerHeight;
+
+      const progress =
+        maxScroll > 0
+          ? Math.min(window.scrollY / maxScroll, 1)
+          : 0;
+
+      document.documentElement.style.setProperty(
+        "--scroll-progress",
+        progress.toFixed(4)
+      );
+    };
+
+    updateScrollProgress();
+
+    window.addEventListener("scroll", updateScrollProgress, {
+      passive: true,
+    });
+
+    window.addEventListener("resize", updateScrollProgress);
+
+    return () => {
+      window.removeEventListener("scroll", updateScrollProgress);
+      window.removeEventListener("resize", updateScrollProgress);
+    };
+  }, []);
 
   useEffect(() => {
     fetch("/api/health")
@@ -207,6 +248,129 @@ function App() {
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
   }, []);
+
+  useEffect(() => {
+    if (!file) {
+      setAudioUrl("");
+      setWaveformSamples([]);
+      setAudioDuration(0);
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    setAudioUrl(url);
+
+    let cancelled = false;
+
+    async function decodeAudio() {
+      let context = null;
+
+      try {
+        const AudioContextClass =
+          window.AudioContext ||
+          window.webkitAudioContext;
+
+        if (!AudioContextClass) {
+          throw new Error(
+            "Web Audio API is not supported."
+          );
+        }
+
+        context = new AudioContextClass();
+
+        const buffer =
+          await file.arrayBuffer();
+
+        const audioBuffer =
+          await context.decodeAudioData(buffer);
+
+        if (cancelled) return;
+
+        const channelCount =
+          audioBuffer.numberOfChannels;
+
+        const sampleCount =
+          audioBuffer.length;
+
+        setAudioDuration(
+          audioBuffer.duration
+        );
+
+        const channels = [];
+
+        for (
+          let channel = 0;
+          channel < channelCount;
+          channel += 1
+        ) {
+          channels.push(
+            audioBuffer.getChannelData(channel)
+          );
+        }
+
+        /*
+         * Create a real mono representation
+         * from the WAV channels.
+         */
+        const samples =
+          new Float32Array(sampleCount);
+
+        for (
+          let i = 0;
+          i < sampleCount;
+          i += 1
+        ) {
+          let value = 0;
+
+          for (
+            let channel = 0;
+            channel < channelCount;
+            channel += 1
+          ) {
+            value += channels[channel][i];
+          }
+
+          samples[i] =
+            value / Math.max(channelCount, 1);
+        }
+
+        setWaveformSamples(samples);
+
+        console.log(
+          "SAGE-RF WAV decoded:",
+          {
+            duration: audioBuffer.duration,
+            sampleRate: audioBuffer.sampleRate,
+            channels: channelCount,
+            samples: sampleCount,
+          }
+        );
+      } catch (error) {
+        console.error(
+          "SAGE-RF WAV decode failed:",
+          error
+        );
+
+        setWaveformSamples([]);
+        setAudioDuration(0);
+      } finally {
+        if (context) {
+          try {
+            await context.close();
+          } catch {
+            // Already closed.
+          }
+        }
+      }
+    }
+
+    decodeAudio();
+
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
 
   const spectrumData = useMemo(() => {
     const spectrum = result?.spectrum;
@@ -272,8 +436,55 @@ function App() {
     }
   }
 
+  async function togglePlayback() {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    try {
+      if (audio.paused) {
+        await audio.play();
+        setIsPlaying(true);
+      } else {
+        audio.pause();
+        setIsPlaying(false);
+      }
+    } catch (err) {
+      console.error("Audio playback failed:", err);
+      setError("This file cannot be played directly by the browser.");
+      setIsPlaying(false);
+    }
+  }
+
+  function stopPlayback() {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    audio.pause();
+    audio.currentTime = 0;
+    setIsPlaying(false);
+  }
+
   const detections = result?.detections?.candidates || [];
   const modulation = result?.modulation;
+
+  if (workspaceOpen && result) {
+    return (
+      <Workspace
+        result={result}
+        sourceFile={file}
+        audioUrl={audioUrl}
+        audioRef={audioRef}
+        waveformSamples={waveformSamples}
+        audioDuration={audioDuration}
+        isPlaying={isPlaying}
+        onPlayPause={togglePlayback}
+        onStop={stopPlayback}
+        onUpload={() => fileInput.current?.click()}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -309,7 +520,7 @@ function App() {
       </header>
 
       <main>
-        <section className="hero">
+        <section className="hero cinematic-hero">
           <div className="hero-copy">
             <div className="eyebrow">
               <span />
@@ -345,7 +556,7 @@ function App() {
             </div>
           </div>
 
-          <div className="hero-visual">
+          <div className="hero-visual cinematic-visual">
             <div className="orb-glow" />
             <RFScene />
 
@@ -494,9 +705,20 @@ function App() {
                 <h2>Signal intelligence</h2>
               </div>
 
-              <div className="success-pill">
-                <ShieldCheck size={15} />
-                ANALYSIS VERIFIED
+              <div className="results-actions">
+                <div className="success-pill">
+                  <ShieldCheck size={15} />
+                  ANALYSIS VERIFIED
+                </div>
+
+                <button
+                  type="button"
+                  className="workspace-launch-button"
+                  onClick={() => setWorkspaceOpen(true)}
+                >
+                  <Sparkles size={15} />
+                  OPEN WORKSTATION
+                </button>
               </div>
             </div>
 
