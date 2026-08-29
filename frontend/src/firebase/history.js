@@ -1,14 +1,24 @@
 import {
   addDoc,
   collection,
+  getDocs,
+  orderBy,
+  query,
   serverTimestamp,
 } from "firebase/firestore";
 
 import { db } from "./firebase";
 
-export async function saveAnalysisHistory(user, file, result) {
+
+export async function saveAnalysisHistory(
+  user,
+  file,
+  result
+) {
   if (!user || !file || !result) {
-    throw new Error("Missing user, file, or analysis result.");
+    throw new Error(
+      "Missing user, file, or analysis result."
+    );
   }
 
   const historyRef = collection(
@@ -59,4 +69,38 @@ export async function saveAnalysisHistory(user, file, result) {
   });
 
   return docRef.id;
+}
+
+
+/*
+ * Load analysis history for the authenticated user.
+ *
+ * History is isolated by Firebase UID:
+ *
+ * users/{uid}/analyses
+ */
+export async function loadAnalysisHistory(user) {
+  if (!user) {
+    return [];
+  }
+
+  const historyRef = collection(
+    db,
+    "users",
+    user.uid,
+    "analyses"
+  );
+
+  const historyQuery = query(
+    historyRef,
+    orderBy("uploadedAt", "desc")
+  );
+
+  const snapshot =
+    await getDocs(historyQuery);
+
+  return snapshot.docs.map((document) => ({
+    id: document.id,
+    ...document.data(),
+  }));
 }

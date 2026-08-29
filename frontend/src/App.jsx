@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Float, Stars } from "@react-three/drei";
+
 import AuthGate from "./auth/AuthGate.jsx";
+
+import { auth } from "./firebase/firebase";
+
+import {
+  saveAnalysisHistory,
+  loadAnalysisHistory,
+} from "./firebase/history";
 
 import {
   Activity,
@@ -14,6 +23,9 @@ import {
   Upload,
   Waves,
   Zap,
+  Clock3,
+  Database,
+  RefreshCw,
 } from "lucide-react";
 
 import {
@@ -27,6 +39,7 @@ import {
 } from "recharts";
 
 import "./styles.css";
+
 import Workspace from "./components/workspace/Workspace.jsx";
 
 
@@ -241,30 +254,74 @@ function SignalBars({ active = true }) {
 function formatHz(value) {
   if (
     value === null ||
-    value === undefined
+    value === undefined ||
+    !Number.isFinite(Number(value))
   ) {
     return "—";
   }
 
-  const abs = Math.abs(value);
+  const numericValue = Number(value);
+  const abs = Math.abs(numericValue);
 
   if (abs >= 1_000_000) {
     return `${(
-      value / 1_000_000
+      numericValue / 1_000_000
     ).toFixed(2)} MHz`;
   }
 
   if (abs >= 1_000) {
     return `${(
-      value / 1_000
+      numericValue / 1_000
     ).toFixed(2)} kHz`;
   }
 
-  return `${value.toFixed(1)} Hz`;
+  return `${numericValue.toFixed(1)} Hz`;
 }
 
 
-function App() {
+function formatHistoryDate(value) {
+  if (!value) {
+    return "Unknown date";
+  }
+
+  try {
+    let date;
+
+    if (
+      typeof value === "object" &&
+      typeof value.toDate === "function"
+    ) {
+      date = value.toDate();
+    } else {
+      date = new Date(value);
+    }
+
+    if (Number.isNaN(date.getTime())) {
+      return "Unknown date";
+    }
+
+    return date.toLocaleString();
+  } catch {
+    return "Unknown date";
+  }
+}
+
+
+function getHistoryModulation(record) {
+  return (
+    record?.modulation?.name ||
+    "Unknown"
+  );
+}
+
+
+function App({ user }) {
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] =
+    useState(false);
+  const [historyError, setHistoryError] =
+    useState("");
+
   const [file, setFile] = useState(null);
 
   const [sampleRate, setSampleRate] =
@@ -291,7 +348,6 @@ function App() {
   const [audioUrl, setAudioUrl] =
     useState("");
 
-  // Real WAV waveform data
   const [waveformSamples, setWaveformSamples] =
     useState([]);
 
@@ -302,6 +358,68 @@ function App() {
   const fileInput = useRef(null);
 
 
+  /*
+   * LOAD FIREBASE ANALYSIS HISTORY
+   *
+   * Each authenticated user gets their own
+   * users/{uid}/analyses collection.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHistory() {
+      if (!user) {
+        setHistory([]);
+        setHistoryError("");
+        setHistoryLoading(false);
+        return;
+      }
+
+      setHistoryLoading(true);
+      setHistoryError("");
+
+      try {
+        const records =
+          await loadAnalysisHistory(user);
+
+        if (!cancelled) {
+          setHistory(records);
+
+          console.log(
+            "SAGE-RF history loaded:",
+            records.length
+          );
+        }
+      } catch (historyLoadError) {
+        console.error(
+          "SAGE-RF history load failed:",
+          historyLoadError
+        );
+
+        if (!cancelled) {
+          setHistoryError(
+            historyLoadError?.message ||
+              "Unable to load analysis history."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setHistoryLoading(false);
+        }
+      }
+    }
+
+    loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+
+  /*
+   * SCROLL PROGRESS
+   */
   useEffect(() => {
     const updateScrollProgress = () => {
       const maxScroll =
@@ -351,30 +469,48 @@ function App() {
   }, []);
 
 
+  /*
+   * BACKEND HEALTH CHECK
+   */
   useEffect(() => {
+    let cancelled = false;
+
     fetch("/api/health")
       .then((response) => {
         if (!response.ok) {
-          throw new Error();
+          throw new Error(
+            "Backend health check failed."
+          );
         }
 
         return response.json();
       })
       .then(() => {
-        setBackendOnline(true);
+        if (!cancelled) {
+          setBackendOnline(true);
+        }
       })
       .catch(() => {
-        setBackendOnline(false);
+        if (!cancelled) {
+          setBackendOnline(false);
+        }
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
 
+  /*
+   * CREATE LOCAL AUDIO URL + DECODE WAV
+   */
   useEffect(() => {
     if (!file) {
       setAudioUrl("");
       setWaveformSamples([]);
       setAudioDuration(0);
-      return;
+      return undefined;
     }
 
     const url =
@@ -437,10 +573,6 @@ function App() {
           );
         }
 
-        /*
-         * Create a real mono representation
-         * from the WAV channels.
-         */
         const samples =
           new Float32Array(
             sampleCount
@@ -487,14 +619,16 @@ function App() {
               sampleCount,
           }
         );
-      } catch (error) {
+      } catch (decodeError) {
         console.error(
           "SAGE-RF WAV decode failed:",
-          error
+          decodeError
         );
 
-        setWaveformSamples([]);
-        setAudioDuration(0);
+        if (!cancelled) {
+          setWaveformSamples([]);
+          setAudioDuration(0);
+        }
       } finally {
         if (context) {
           try {
@@ -515,6 +649,9 @@ function App() {
   }, [file]);
 
 
+  /*
+   * DISPLAY SPECTRUM DATA
+   */
   const spectrumData = useMemo(() => {
     const spectrum =
       result?.spectrum;
@@ -524,12 +661,14 @@ function App() {
     }
 
     const center =
-      spectrum.peak_frequency_hz ??
-      0;
+      Number(
+        spectrum.peak_frequency_hz
+      ) || 0;
 
     const bandwidth =
-      spectrum.occupied_bandwidth_hz ??
-      1000;
+      Number(
+        spectrum.occupied_bandwidth_hz
+      ) || 1000;
 
     return Array.from(
       { length: 80 },
@@ -576,8 +715,14 @@ function App() {
   }, [result]);
 
 
+  /*
+   * ANALYZE SIGNAL
+   */
   async function analyzeSignal() {
     if (!file) {
+      setError(
+        "Please select an RF recording first."
+      );
       return;
     }
 
@@ -604,29 +749,212 @@ function App() {
         );
       }
 
+      /*
+       * Firebase authentication.
+       *
+       * The backend requires:
+       *
+       * Authorization: Bearer <Firebase ID token>
+       */
+      const currentUser =
+        auth.currentUser;
+
+      if (!currentUser) {
+        throw new Error(
+          "You must be signed in to analyze a signal."
+        );
+      }
+
+      /*
+       * Force-refreshing is not necessary for
+       * normal requests. Firebase automatically
+       * refreshes the token when required.
+       */
+      const idToken =
+        await currentUser.getIdToken();
+
       const response =
         await fetch(
           "/api/analyze",
           {
             method: "POST",
+
+            headers: {
+              Authorization:
+                `Bearer ${idToken}`,
+            },
+
             body: formData,
           }
         );
 
-      const data =
-        await response.json();
+      let data = null;
+
+      try {
+        data =
+          await response.json();
+      } catch {
+        throw new Error(
+          "The analysis server returned an invalid response."
+        );
+      }
 
       if (!response.ok) {
         throw new Error(
-          data.detail ||
+          data?.detail ||
             "RF analysis failed."
         );
       }
 
+      /*
+       * Show analysis immediately.
+       */
       setResult(data);
+
+
+      /*
+       * SAVE ANALYSIS HISTORY
+       *
+       * Firestore path:
+       *
+       * users/{uid}/analyses/{analysisId}
+       */
+      try {
+        const historyUser =
+          auth.currentUser;
+
+        if (historyUser) {
+          const historyId =
+            await saveAnalysisHistory(
+              historyUser,
+              file,
+              data
+            );
+
+          console.log(
+            "SAGE-RF history saved:",
+            historyId
+          );
+
+
+          /*
+           * Immediately update the UI instead
+           * of waiting for another login.
+           */
+          const newHistoryRecord = {
+            id: historyId,
+
+            filename:
+              file.name,
+
+            fileSize:
+              file.size,
+
+            fileType:
+              file.type ||
+              "unknown",
+
+            uploadedAt:
+              new Date(),
+
+            metadata: {
+              sourceFormat:
+                data.metadata
+                  ?.source_format ||
+                "",
+
+              sampleRate:
+                data.metadata
+                  ?.sample_rate ||
+                null,
+
+              duration:
+                data.metadata
+                  ?.duration_seconds ||
+                null,
+
+              sampleCount:
+                data.metadata
+                  ?.sample_count ||
+                null,
+
+              meanPower:
+                data.metadata
+                  ?.mean_power ||
+                null,
+            },
+
+            spectrum: {
+              peakFrequency:
+                data.spectrum
+                  ?.peak_frequency_hz ||
+                null,
+
+              occupiedBandwidth:
+                data.spectrum
+                  ?.occupied_bandwidth_hz ||
+                null,
+
+              snr:
+                data.spectrum
+                  ?.snr_db ||
+                null,
+            },
+
+            modulation: {
+              name:
+                data.modulation
+                  ?.modulation ||
+                null,
+
+              confidence:
+                data.modulation
+                  ?.confidence ||
+                null,
+            },
+
+            detectionCount:
+              data.detections
+                ?.candidate_count ||
+              0,
+          };
+
+          setHistory(
+            (previousHistory) => [
+              newHistoryRecord,
+              ...previousHistory,
+            ]
+          );
+
+          setHistoryError("");
+        } else {
+          console.warn(
+            "No authenticated Firebase user. History was not saved."
+          );
+        }
+      } catch (historySaveError) {
+        /*
+         * History failure should NOT make the
+         * actual RF analysis fail.
+         */
+        console.error(
+          "SAGE-RF history save failed:",
+          historySaveError
+        );
+
+        setHistoryError(
+          historySaveError?.message ||
+            "Analysis completed, but history could not be saved."
+        );
+      }
     } catch (err) {
+      console.error(
+        "SAGE-RF analysis failed:",
+        err
+      );
+
       setError(
-        err.message ||
+        err?.message ||
           "Unable to analyze signal."
       );
     } finally {
@@ -635,6 +963,9 @@ function App() {
   }
 
 
+  /*
+   * PLAY / PAUSE
+   */
   async function togglePlayback() {
     const audio =
       audioRef.current;
@@ -651,10 +982,10 @@ function App() {
         audio.pause();
         setIsPlaying(false);
       }
-    } catch (err) {
+    } catch (playbackError) {
       console.error(
         "Audio playback failed:",
-        err
+        playbackError
       );
 
       setError(
@@ -666,6 +997,9 @@ function App() {
   }
 
 
+  /*
+   * STOP PLAYBACK
+   */
   function stopPlayback() {
     const audio =
       audioRef.current;
@@ -689,8 +1023,7 @@ function App() {
 
 
   /*
-   * IMPORTANT:
-   * Keep the original workstation untouched.
+   * WORKSTATION
    */
   if (
     workspaceOpen &&
@@ -871,6 +1204,7 @@ function App() {
 
 
             <button
+              type="button"
               className={`drop-zone ${
                 file
                   ? "selected"
@@ -954,6 +1288,7 @@ function App() {
 
             <div className="action-row">
               <button
+                type="button"
                 className="primary-button"
                 disabled={
                   !file ||
@@ -979,11 +1314,17 @@ function App() {
 
               {file && (
                 <button
+                  type="button"
                   className="secondary-button"
                   onClick={() => {
                     setFile(null);
                     setResult(null);
                     setError("");
+
+                    if (fileInput.current) {
+                      fileInput.current.value =
+                        "";
+                    }
                   }}
                 >
                   CLEAR
@@ -1001,6 +1342,195 @@ function App() {
                 <span>
                   {error}
                 </span>
+              </div>
+            )}
+          </div>
+        </section>
+
+
+        {/*
+         * ANALYSIS HISTORY
+         *
+         * This is intentionally outside the
+         * current result section so the user's
+         * previous analyses remain visible
+         * after a new login.
+         */}
+        <section className="results-section history-section">
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow">
+                <span />
+                FIREBASE ARCHIVE
+              </div>
+
+              <h2>
+                Analysis history
+              </h2>
+            </div>
+
+            <div className="engine-pill">
+              <Database size={15} />
+              {user
+                ? "USER HISTORY"
+                : "AUTHENTICATION REQUIRED"}
+            </div>
+          </div>
+
+
+          <div className="glass-panel">
+            {historyLoading ? (
+              <div className="empty-state">
+                <RefreshCw
+                  size={18}
+                  className="spin"
+                />
+
+                <span>
+                  Loading analysis history...
+                </span>
+              </div>
+            ) : historyError ? (
+              <div className="error-box">
+                <strong>
+                  History error
+                </strong>
+
+                <span>
+                  {historyError}
+                </span>
+              </div>
+            ) : history.length === 0 ? (
+              <div className="empty-state">
+                <Clock3 size={20} />
+
+                <span>
+                  No saved analyses yet.
+                </span>
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>
+                        SIGNAL
+                      </th>
+                      <th>
+                        FORMAT
+                      </th>
+                      <th>
+                        SAMPLE RATE
+                      </th>
+                      <th>
+                        MODULATION
+                      </th>
+                      <th>
+                        PEAK
+                      </th>
+                      <th>
+                        SNR
+                      </th>
+                      <th>
+                        DETECTIONS
+                      </th>
+                      <th>
+                        SAVED
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {history.map(
+                      (
+                        record,
+                        index
+                      ) => (
+                        <tr
+                          key={
+                            record.id ||
+                            `${record.filename}-${index}`
+                          }
+                        >
+                          <td>
+                            <span className="row-index">
+                              {String(
+                                index + 1
+                              ).padStart(
+                                2,
+                                "0"
+                              )}
+                            </span>
+                          </td>
+
+                          <td>
+                            <strong>
+                              {record.filename ||
+                                "Untitled signal"}
+                            </strong>
+                          </td>
+
+                          <td>
+                            {record.metadata
+                              ?.sourceFormat ||
+                              record.fileType ||
+                              "—"}
+                          </td>
+
+                          <td>
+                            {record.metadata
+                              ?.sampleRate !=
+                            null
+                              ? `${Number(
+                                  record.metadata
+                                    .sampleRate
+                                ).toLocaleString()} Hz`
+                              : "—"}
+                          </td>
+
+                          <td>
+                            <span className="modulation-badge">
+                              {getHistoryModulation(
+                                record
+                              )}
+                            </span>
+                          </td>
+
+                          <td>
+                            {formatHz(
+                              record.spectrum
+                                ?.peakFrequency
+                            )}
+                          </td>
+
+                          <td className="positive">
+                            {record.spectrum
+                              ?.snr != null
+                              ? `${Number(
+                                  record.spectrum
+                                    .snr
+                                ).toFixed(
+                                  1
+                                )} dB`
+                              : "—"}
+                          </td>
+
+                          <td>
+                            {record.detectionCount ??
+                              0}
+                          </td>
+
+                          <td>
+                            {formatHistoryDate(
+                              record.uploadedAt
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    )}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -1450,21 +1980,27 @@ function App() {
                   <thead>
                     <tr>
                       <th>#</th>
+
                       <th>
                         CENTER FREQUENCY
                       </th>
+
                       <th>
                         BANDWIDTH
                       </th>
+
                       <th>
                         PEAK
                       </th>
+
                       <th>
                         SNR
                       </th>
+
                       <th>
                         CONFIDENCE
                       </th>
+
                       <th>
                         MODULATION
                       </th>
@@ -1662,16 +2198,17 @@ function App() {
 
 
 /*
- * Firebase authentication wrapper.
+ * FIREBASE AUTHENTICATION WRAPPER
  *
- * The original App stays untouched above.
- * AuthGate only decides whether the user
- * is allowed to see it.
+ * AuthGate supplies the currently authenticated
+ * Firebase user to App.
  */
 function AppWithAuth() {
   return (
     <AuthGate>
-      <App />
+      {(user) => (
+        <App user={user} />
+      )}
     </AuthGate>
   );
 }

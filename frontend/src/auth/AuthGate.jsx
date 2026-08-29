@@ -143,7 +143,9 @@ export default function AuthGate({ children }) {
           </button>
         </div>
 
-        {children}
+        {typeof children === "function"
+            ? children(user)
+            : children}
       </div>
     );
   }
