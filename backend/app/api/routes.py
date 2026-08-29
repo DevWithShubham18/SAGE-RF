@@ -1,24 +1,19 @@
+import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-import json
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from backend.app.analysis.features import analyze_signal
-from backend.app.analysis.signal_analysis import (
-    analyze_all_detected_signals,
-)
-from backend.app.db.database import SessionLocal
+from backend.app.analysis.signal_analysis import analyze_all_detected_signals
+from backend.app.db.database import get_db
 from backend.app.db.models import SignalAnalysis
 from backend.app.dsp.detector import detect_signals
 from backend.app.io.readers import load_signal
 
 
-router = APIRouter(
-    prefix="/api",
-    tags=["RF Analysis"],
-)
+router = APIRouter(prefix="/api", tags=["RF Analysis"])
 
 
 # ============================================================
@@ -36,13 +31,14 @@ def health_check():
 
 
 # ============================================================
-# ANALYZE RF FILE
+# ANALYZE SIGNAL
 # ============================================================
 
 @router.post("/analyze")
 async def analyze_file(
     file: UploadFile = File(...),
     iq_sample_rate: float | None = Form(None),
+    db: Session = Depends(get_db),
 ):
     """
     End-to-end RF analysis API.
@@ -56,7 +52,7 @@ async def analyze_file(
         6. Per-signal frequency isolation
         7. Per-signal metrics
         8. Per-signal modulation classification
-        9. Persist analysis in SQLite history
+        9. Save analysis to SQLite history
     """
 
     filename = file.filename or ""
@@ -71,9 +67,9 @@ async def analyze_file(
     temporary_path = None
 
     try:
-        # =====================================================
+        # ========================================================
         # 1. Save uploaded file temporarily
-        # =====================================================
+        # ========================================================
 
         with NamedTemporaryFile(
             suffix=suffix,
@@ -82,9 +78,9 @@ async def analyze_file(
             temp.write(await file.read())
             temporary_path = temp.name
 
-        # =====================================================
+        # ========================================================
         # 2. Load signal
-        # =====================================================
+        # ========================================================
 
         signal = load_signal(
             temporary_path,
@@ -94,9 +90,9 @@ async def analyze_file(
         samples = signal.samples
         sample_rate = float(signal.sample_rate)
 
-        # =====================================================
-        # 3. Metadata
-        # =====================================================
+        # ========================================================
+        # 3. Build metadata
+        # ========================================================
 
         metadata = {
             "source_format": signal.source_format,
@@ -120,18 +116,18 @@ async def analyze_file(
                 np.mean(amplitudes ** 2)
             )
 
-        # =====================================================
+        # ========================================================
         # 4. Global spectrum + waterfall
-        # =====================================================
+        # ========================================================
 
         analysis = analyze_signal(
             samples,
             sample_rate,
         )
 
-        # =====================================================
+        # ========================================================
         # 5. Detect RF signals
-        # =====================================================
+        # ========================================================
 
         detection = detect_signals(
             samples,
@@ -143,9 +139,9 @@ async def analyze_file(
             [],
         )
 
-        # =====================================================
-        # 6. Analyze every detected signal
-        # =====================================================
+        # ========================================================
+        # 6. Analyze every detected signal independently
+        # ========================================================
 
         per_signal = analyze_all_detected_signals(
             samples=samples,
@@ -158,9 +154,9 @@ async def analyze_file(
             [],
         )
 
-        # =====================================================
-        # 7. Enrich candidates
-        # =====================================================
+        # ========================================================
+        # 7. Enrich detector candidates
+        # ========================================================
 
         enriched_candidates = []
 
@@ -176,7 +172,7 @@ async def analyze_file(
                 )
 
                 modulation = detailed.get(
-                    "modulation"
+                    "modulation",
                 )
 
                 enriched["metrics"] = metrics
@@ -213,13 +209,11 @@ async def analyze_file(
                 enriched["modulation_confidence"] = None
                 enriched["modulation_analysis"] = None
 
-            enriched_candidates.append(
-                enriched
-            )
+            enriched_candidates.append(enriched)
 
-        # =====================================================
+        # ========================================================
         # 8. Top-level modulation
-        # =====================================================
+        # ========================================================
 
         top_level_modulation = None
 
@@ -228,9 +222,9 @@ async def analyze_file(
                 "modulation"
             )
 
-        # =====================================================
+        # ========================================================
         # 9. Detection response
-        # =====================================================
+        # ========================================================
 
         detections = {
             "candidate_count": len(
@@ -243,9 +237,9 @@ async def analyze_file(
             "signals": detailed_signals,
         }
 
-        # =====================================================
-        # 10. Final API response
-        # =====================================================
+        # ========================================================
+        # 10. Final response
+        # ========================================================
 
         result = {
             "status": "success",
@@ -254,111 +248,85 @@ async def analyze_file(
             "parameters": {
                 "iq_sample_rate": iq_sample_rate,
             },
-
             "spectrum": analysis.get(
                 "spectrum"
             ),
-
             "waterfall": analysis.get(
                 "waterfall"
             ),
-
             "modulation": top_level_modulation,
-
             "detections": detections,
-
             "diagnostics": {
                 **analysis.get(
                     "diagnostics",
                     {},
                 ),
-
                 "signal_detector": (
                     "spectral_threshold_detector"
                 ),
-
                 "per_signal_analysis": (
                     "fft_frequency_isolation"
                 ),
-
                 "per_signal_modulation": (
                     "explainable_baseline"
                 ),
             },
-
             "errors": [],
         }
 
-        # =====================================================
-        # 11. SAVE ANALYSIS TO DATABASE
-        # =====================================================
+        # ========================================================
+        # 11. Save analysis to SQLite history
+        # ========================================================
 
-        db: Session = SessionLocal()
+        history_row = SignalAnalysis(
+            filename=filename,
+            source_format=signal.source_format,
+            sample_rate=int(sample_rate),
+            duration_seconds=float(
+                signal.duration_seconds
+            ),
+            peak_frequency_hz=(
+                result["spectrum"].get(
+                    "peak_frequency_hz"
+                )
+                if result["spectrum"]
+                else None
+            ),
+            occupied_bandwidth_hz=(
+                result["spectrum"].get(
+                    "occupied_bandwidth_hz"
+                )
+                if result["spectrum"]
+                else None
+            ),
+            snr_db=(
+                result["spectrum"].get("snr_db")
+                if result["spectrum"]
+                else None
+            ),
+            modulation=(
+                top_level_modulation.get("modulation")
+                if top_level_modulation
+                else None
+            ),
+            detection_count=len(
+                enriched_candidates
+            ),
+            result_json=json.dumps(
+                result,
+                default=str,
+            ),
+        )
 
-        try:
-            analysis_record = SignalAnalysis(
-                filename=filename,
-                source_format=signal.source_format,
-                sample_rate=int(sample_rate),
-                duration_seconds=float(
-                    signal.duration_seconds
-                ),
-                peak_frequency_hz=(
-                    result["spectrum"].get(
-                        "peak_frequency_hz"
-                    )
-                    if result["spectrum"]
-                    else None
-                ),
-                occupied_bandwidth_hz=(
-                    result["spectrum"].get(
-                        "occupied_bandwidth_hz"
-                    )
-                    if result["spectrum"]
-                    else None
-                ),
-                snr_db=(
-                    result["spectrum"].get(
-                        "snr_db"
-                    )
-                    if result["spectrum"]
-                    else None
-                ),
-                modulation=(
-                    top_level_modulation.get(
-                        "modulation"
-                    )
-                    if top_level_modulation
-                    else None
-                ),
-                detection_count=len(
-                    enriched_candidates
-                ),
-                result_json=json.dumps(
-                    result,
-                    default=str,
-                ),
-            )
+        db.add(history_row)
+        db.commit()
+        db.refresh(history_row)
 
-            db.add(analysis_record)
-            db.commit()
-            db.refresh(analysis_record)
-
-        except Exception:
-            db.rollback()
-
-            # IMPORTANT:
-            # Database failure should not break RF analysis.
-            #
-            # The analysis itself succeeded, so we still return
-            # the original analysis response.
-
-        finally:
-            db.close()
-
-        # =====================================================
-        # 12. Return original API response
-        # =====================================================
+        # Expose the database ID to the frontend.
+        result["history_id"] = history_row.id
+        result["created_at"] = (
+            history_row.created_at.isoformat()
+        )
 
         return result
 
@@ -366,15 +334,17 @@ async def analyze_file(
         raise
 
     except Exception as exc:
+        db.rollback()
+
         raise HTTPException(
             status_code=500,
             detail=f"Signal analysis failed: {exc}",
         ) from exc
 
     finally:
-        # =====================================================
-        # 13. Clean temporary file
-        # =====================================================
+        # ========================================================
+        # 12. Always clean up temporary file
+        # ========================================================
 
         if temporary_path:
             Path(
@@ -385,180 +355,104 @@ async def analyze_file(
 
 
 # ============================================================
-# ANALYSIS HISTORY
+# HISTORY
 # ============================================================
 
 @router.get("/history")
 def get_history(
-    limit: int = 50,
+    db: Session = Depends(get_db),
 ):
     """
-    Return previously analyzed RF recordings.
+    Return saved RF analyses.
 
-    This is the first version of the SAGE-RF history/library API.
-
-    Later we will attach Firebase users to these records.
+    Newest analyses are returned first.
     """
 
-    if limit < 1:
-        limit = 1
+    rows = (
+        db.query(SignalAnalysis)
+        .order_by(
+            SignalAnalysis.created_at.desc()
+        )
+        .all()
+    )
 
-    if limit > 200:
-        limit = 200
+    history = []
 
-    db: Session = SessionLocal()
-
-    try:
-        records = (
-            db.query(SignalAnalysis)
-            .order_by(
-                SignalAnalysis.created_at.desc()
-            )
-            .limit(limit)
-            .all()
+    for row in rows:
+        history.append(
+            {
+                "id": row.id,
+                "filename": row.filename,
+                "source_format": row.source_format,
+                "sample_rate": row.sample_rate,
+                "duration_seconds": row.duration_seconds,
+                "peak_frequency_hz": (
+                    row.peak_frequency_hz
+                ),
+                "occupied_bandwidth_hz": (
+                    row.occupied_bandwidth_hz
+                ),
+                "snr_db": row.snr_db,
+                "modulation": row.modulation,
+                "detection_count": (
+                    row.detection_count
+                ),
+                "created_at": (
+                    row.created_at.isoformat()
+                ),
+            }
         )
 
-        history = []
-
-        for record in records:
-            history.append(
-                {
-                    "id": record.id,
-                    "filename": record.filename,
-                    "source_format": record.source_format,
-                    "sample_rate": record.sample_rate,
-                    "duration_seconds": (
-                        record.duration_seconds
-                    ),
-                    "peak_frequency_hz": (
-                        record.peak_frequency_hz
-                    ),
-                    "occupied_bandwidth_hz": (
-                        record.occupied_bandwidth_hz
-                    ),
-                    "snr_db": record.snr_db,
-                    "modulation": record.modulation,
-                    "detection_count": (
-                        record.detection_count
-                    ),
-                    "created_at": (
-                        record.created_at.isoformat()
-                        if record.created_at
-                        else None
-                    ),
-                }
-            )
-
-        return {
-            "status": "success",
-            "count": len(history),
-            "history": history,
-        }
-
-    finally:
-        db.close()
+    return {
+        "status": "success",
+        "count": len(history),
+        "history": history,
+    }
 
 
 # ============================================================
-# GET ONE HISTORY RECORD
+# GET ONE HISTORY ITEM
 # ============================================================
 
 @router.get("/history/{analysis_id}")
 def get_history_item(
     analysis_id: int,
+    db: Session = Depends(get_db),
 ):
     """
-    Return the complete stored analysis result.
+    Return the complete saved analysis.
     """
 
-    db: Session = SessionLocal()
+    row = (
+        db.query(SignalAnalysis)
+        .filter(
+            SignalAnalysis.id == analysis_id
+        )
+        .first()
+    )
 
-    try:
-        record = (
-            db.query(SignalAnalysis)
-            .filter(
-                SignalAnalysis.id == analysis_id
-            )
-            .first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Analysis history item not found.",
         )
 
-        if record is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Analysis record not found.",
-            )
-
-        try:
-            result = json.loads(
-                record.result_json
-            )
-        except Exception:
-            result = {}
-
-        return {
-            "status": "success",
-            "id": record.id,
-            "filename": record.filename,
-            "created_at": (
-                record.created_at.isoformat()
-                if record.created_at
-                else None
-            ),
-            "result": result,
-        }
-
-    finally:
-        db.close()
-
-
-# ============================================================
-# DELETE HISTORY RECORD
-# ============================================================
-
-@router.delete("/history/{analysis_id}")
-def delete_history_item(
-    analysis_id: int,
-):
-    """
-    Delete one saved analysis from history.
-    """
-
-    db: Session = SessionLocal()
-
     try:
-        record = (
-            db.query(SignalAnalysis)
-            .filter(
-                SignalAnalysis.id == analysis_id
-            )
-            .first()
+        result = json.loads(
+            row.result_json
         )
-
-        if record is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Analysis record not found.",
-            )
-
-        db.delete(record)
-        db.commit()
-
-        return {
-            "status": "success",
-            "message": "Analysis deleted.",
-            "id": analysis_id,
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as exc:
-        db.rollback()
-
+    except json.JSONDecodeError:
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to delete analysis: {exc}",
-        ) from exc
+            detail="Saved analysis data is invalid.",
+        )
 
-    finally:
-        db.close()
+    result["history_id"] = row.id
+    result["created_at"] = (
+        row.created_at.isoformat()
+    )
+
+    return {
+        "status": "success",
+        "analysis": result,
+    }
