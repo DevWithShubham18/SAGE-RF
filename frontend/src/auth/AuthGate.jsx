@@ -1,382 +1,268 @@
 import { useEffect, useState } from "react";
+import { createUserProfile } from "../firebase/user";
+import { onAuthStateChanged } from "firebase/auth";
 import {
-  ArrowRight,
+  Activity,
   LockKeyhole,
-  Mail,
+  LogIn,
   Radio,
-  ShieldCheck,
-  UserRound,
+  UserPlus,
 } from "lucide-react";
 
-const SESSION_KEY = "sage_rf_session";
+import { auth } from "../firebase/firebase";
+import {
+  loginUser,
+  registerUser,
+} from "../firebase/auth";
 
-const emptyForm = {
-  name: "",
-  email: "",
-  password: "",
-};
+export default function AuthGate({ children }) {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
 
-function getStoredSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-
-    if (!raw) return null;
-
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function AuthCard({ onAuthenticated }) {
   const [mode, setMode] = useState("login");
-  const [form, setForm] = useState(emptyForm);
-  const [step, setStep] = useState("credentials");
-  const [otp, setOtp] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  function updateField(event) {
-    const { name, value } = event.target;
-
-    setForm((previous) => ({
-      ...previous,
-      [name]: value,
-    }));
-
-    setError("");
-    setMessage("");
-  }
-
-  function switchMode(nextMode) {
-    setMode(nextMode);
-    setStep("credentials");
-    setOtp("");
-    setForm(emptyForm);
-    setError("");
-    setMessage("");
-  }
-
-  function submitCredentials(event) {
-    event.preventDefault();
-
-    setError("");
-    setMessage("");
-
-    if (!form.email.trim() || !form.password.trim()) {
-      setError("Email and password are required.");
-      return;
-    }
-
-    if (mode === "signup" && !form.name.trim()) {
-      setError("Your name is required.");
-      return;
-    }
-
-    if (form.password.length < 6) {
-      setError("Password must contain at least 6 characters.");
-      return;
-    }
-
-    setLoading(true);
-
-    window.setTimeout(() => {
-      setLoading(false);
-      setStep("otp");
-
-      setMessage(
-        "Development mode: enter 123456 to verify this account."
-      );
-    }, 500);
-  }
-
-  function verifyOtp(event) {
-    event.preventDefault();
-
-    setError("");
-    setMessage("");
-
-    if (otp !== "123456") {
-      setError("Invalid OTP. Use 123456 in development mode.");
-      return;
-    }
-
-    const session = {
-      id: `usr_${Date.now()}`,
-      name:
-        form.name.trim() ||
-        form.email.split("@")[0] ||
-        "SAGE-RF User",
-      email: form.email.trim().toLowerCase(),
-      authenticatedAt: new Date().toISOString(),
-    };
-
-    localStorage.setItem(
-      SESSION_KEY,
-      JSON.stringify(session)
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (currentUser) => {
+        setUser(currentUser);
+        setChecking(false);
+      }
     );
 
-    onAuthenticated(session);
+    return unsubscribe;
+  }, []);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+
+    setError("");
+
+    if (!email.trim() || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      let authenticatedUser;
+
+if (mode === "login") {
+  authenticatedUser = await loginUser(
+    email.trim(),
+    password
+  );
+} else {
+  authenticatedUser = await registerUser(
+    email.trim(),
+    password
+  );
+}
+
+await createUserProfile(authenticatedUser);
+    } catch (err) {
+      console.error(err);
+
+      switch (err.code) {
+        case "auth/invalid-credential":
+          setError("Incorrect email or password.");
+          break;
+
+        case "auth/email-already-in-use":
+          setError("An account with this email already exists.");
+          break;
+
+        case "auth/weak-password":
+          setError("Password must be at least 6 characters.");
+          break;
+
+        case "auth/invalid-email":
+          setError("Enter a valid email address.");
+          break;
+
+        case "auth/network-request-failed":
+          setError("Network error. Check your internet connection.");
+          break;
+
+        default:
+          setError(
+            err.message || "Authentication failed."
+          );
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (checking) {
+    return (
+      <div className="auth-loading">
+        <div className="auth-loading-mark">
+          <Radio size={28} />
+        </div>
+
+        <div className="auth-loading-title">
+          SAGE-RF
+        </div>
+
+        <div className="auth-loading-status">
+          AUTHENTICATING SYSTEM
+        </div>
+      </div>
+    );
+  }
+
+  if (user) {
+    return children;
   }
 
   return (
-    <main className="sage-auth-page">
-      <div className="sage-auth-background">
-        <div className="sage-auth-grid" />
-        <div className="sage-auth-orb sage-auth-orb-one" />
-        <div className="sage-auth-orb sage-auth-orb-two" />
-      </div>
+    <div className="auth-screen">
+      <div className="auth-grid" />
 
-      <section className="sage-auth-card">
-        <div className="sage-auth-brand">
-          <div className="sage-auth-logo">
-            <Radio size={21} />
+      <div className="auth-glow auth-glow-one" />
+      <div className="auth-glow auth-glow-two" />
+
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="auth-brand-mark">
+            <Radio size={22} />
           </div>
 
           <div>
-            <strong>SAGE-RF</strong>
-            <span>RADIO FREQUENCY ANALYSIS</span>
+            <div className="auth-brand-name">
+              SAGE<span>-RF</span>
+            </div>
+
+            <div className="auth-brand-subtitle">
+              SIGNAL INTELLIGENCE PLATFORM
+            </div>
           </div>
         </div>
 
-        <div className="sage-auth-heading">
-          <span className="sage-auth-kicker">
+        <div className="auth-divider" />
+
+        <div className="auth-heading">
+          <div className="auth-kicker">
+            <Activity size={13} />
             SECURE ACCESS
-          </span>
+          </div>
 
           <h1>
-            {step === "otp"
-              ? "Verify your identity"
-              : mode === "login"
-                ? "Welcome back"
-                : "Create your account"}
+            {mode === "login"
+              ? "Welcome back."
+              : "Create your account."}
           </h1>
 
           <p>
-            {step === "otp"
-              ? "Enter the verification code to continue to your RF workstation."
-              : "Access your signal analysis workspace and saved investigations."}
+            {mode === "login"
+              ? "Sign in to access your RF intelligence workstation."
+              : "Create an account to save signals and analysis history."}
           </p>
         </div>
 
-        {step === "credentials" ? (
-          <form
-            className="sage-auth-form"
-            onSubmit={submitCredentials}
-          >
-            {mode === "signup" && (
-              <label>
-                <span>FULL NAME</span>
+        <form onSubmit={handleSubmit}>
+          <label className="auth-field">
+            <span>EMAIL</span>
 
-                <div className="sage-auth-input">
-                  <UserRound size={17} />
-
-                  <input
-                    name="name"
-                    value={form.name}
-                    onChange={updateField}
-                    placeholder="Your name"
-                    autoComplete="name"
-                  />
-                </div>
-              </label>
-            )}
-
-            <label>
-              <span>EMAIL ADDRESS</span>
-
-              <div className="sage-auth-input">
-                <Mail size={17} />
-
-                <input
-                  name="email"
-                  type="email"
-                  value={form.email}
-                  onChange={updateField}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                />
-              </div>
-            </label>
-
-            <label>
-              <span>PASSWORD</span>
-
-              <div className="sage-auth-input">
-                <LockKeyhole size={17} />
-
-                <input
-                  name="password"
-                  type="password"
-                  value={form.password}
-                  onChange={updateField}
-                  placeholder="Minimum 6 characters"
-                  autoComplete={
-                    mode === "login"
-                      ? "current-password"
-                      : "new-password"
-                  }
-                />
-              </div>
-            </label>
-
-            {error && (
-              <div className="sage-auth-message error">
-                {error}
-              </div>
-            )}
-
-            {message && (
-              <div className="sage-auth-message">
-                {message}
-              </div>
-            )}
-
-            <button
-              className="sage-auth-submit"
-              type="submit"
-              disabled={loading}
-            >
-              {loading
-                ? "INITIALIZING..."
-                : mode === "login"
-                  ? "CONTINUE TO SAGE-RF"
-                  : "CREATE SAGE-RF ACCOUNT"}
-
-              {!loading && <ArrowRight size={17} />}
-            </button>
-          </form>
-        ) : (
-          <form
-            className="sage-auth-form"
-            onSubmit={verifyOtp}
-          >
-            <div className="sage-auth-otp-icon">
-              <ShieldCheck size={25} />
-            </div>
-
-            <label>
-              <span>VERIFICATION CODE</span>
-
-              <div className="sage-auth-input sage-auth-otp-input">
-                <input
-                  value={otp}
-                  onChange={(event) =>
-                    setOtp(
-                      event.target.value
-                        .replace(/\D/g, "")
-                        .slice(0, 6)
-                    )
-                  }
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="000000"
-                  autoComplete="one-time-code"
-                  autoFocus
-                />
-              </div>
-            </label>
-
-            {error && (
-              <div className="sage-auth-message error">
-                {error}
-              </div>
-            )}
-
-            {message && (
-              <div className="sage-auth-message">
-                {message}
-              </div>
-            )}
-
-            <button
-              className="sage-auth-submit"
-              type="submit"
-            >
-              VERIFY & ENTER
-              <ArrowRight size={17} />
-            </button>
-
-            <button
-              className="sage-auth-secondary"
-              type="button"
-              onClick={() => {
-                setStep("credentials");
-                setOtp("");
-                setError("");
-                setMessage("");
-              }}
-            >
-              BACK TO SIGN IN
-            </button>
-          </form>
-        )}
-
-        {step === "credentials" && (
-          <div className="sage-auth-switch">
-            <span>
-              {mode === "login"
-                ? "New to SAGE-RF?"
-                : "Already have an account?"}
-            </span>
-
-            <button
-              type="button"
-              onClick={() =>
-                switchMode(
-                  mode === "login"
-                    ? "signup"
-                    : "login"
-                )
+            <input
+              type="email"
+              value={email}
+              autoComplete="email"
+              placeholder="operator@example.com"
+              onChange={(event) =>
+                setEmail(event.target.value)
               }
-            >
-              {mode === "login"
-                ? "CREATE ACCOUNT"
-                : "SIGN IN"}
-            </button>
-          </div>
-        )}
+            />
+          </label>
 
-        <div className="sage-auth-footer">
-          <ShieldCheck size={14} />
+          <label className="auth-field">
+            <span>PASSWORD</span>
+
+            <input
+              type="password"
+              value={password}
+              autoComplete={
+                mode === "login"
+                  ? "current-password"
+                  : "new-password"
+              }
+              placeholder="••••••••"
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+            />
+          </label>
+
+          {error && (
+            <div className="auth-error">
+              <LockKeyhole size={15} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <button
+            className="auth-submit"
+            type="submit"
+            disabled={busy}
+          >
+            {busy ? (
+              <>
+                <span className="auth-spinner" />
+                AUTHENTICATING...
+              </>
+            ) : mode === "login" ? (
+              <>
+                <LogIn size={17} />
+                SIGN IN
+              </>
+            ) : (
+              <>
+                <UserPlus size={17} />
+                CREATE ACCOUNT
+              </>
+            )}
+          </button>
+        </form>
+
+        <div className="auth-switch">
           <span>
-            Secure RF analysis environment
+            {mode === "login"
+              ? "Don't have an account?"
+              : "Already have an account?"}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => {
+              setError("");
+              setMode(
+                mode === "login"
+                  ? "register"
+                  : "login"
+              );
+            }}
+          >
+            {mode === "login"
+              ? "Create account"
+              : "Sign in"}
+          </button>
+        </div>
+
+        <div className="auth-security">
+          <LockKeyhole size={14} />
+
+          <span>
+            Protected by Firebase Authentication
           </span>
         </div>
-      </section>
-    </main>
+      </div>
+    </div>
   );
-}
-
-export default function AuthGate({
-  children,
-}) {
-  const [session, setSession] = useState(
-    getStoredSession
-  );
-
-  useEffect(() => {
-    const stored = getStoredSession();
-
-    if (stored) {
-      setSession(stored);
-    }
-  }, []);
-
-  if (!session) {
-    return (
-      <AuthCard
-        onAuthenticated={setSession}
-      />
-    );
-  }
-
-  return children({
-    session,
-    logout() {
-      localStorage.removeItem(SESSION_KEY);
-      setSession(null);
-    },
-  });
 }
