@@ -1,24 +1,35 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
 from sqlalchemy.orm import Session
 
 from backend.app.analysis.features import analyze_signal
-from backend.app.analysis.signal_analysis import analyze_all_detected_signals
+from backend.app.analysis.signal_analysis import (
+    analyze_all_detected_signals,
+)
+from backend.app.auth.dependencies import get_current_user
 from backend.app.db.database import get_db
 from backend.app.db.models import SignalAnalysis
 from backend.app.dsp.detector import detect_signals
 from backend.app.io.readers import load_signal
 
 
-router = APIRouter(prefix="/api", tags=["RF Analysis"])
+router = APIRouter(
+    prefix="/api",
+    tags=["RF Analysis"],
+)
 
-
-# ============================================================
-# HEALTH
-# ============================================================
 
 @router.get("/health")
 def health_check():
@@ -27,32 +38,21 @@ def health_check():
         "service": "SAGE-RF",
         "dsp": "GNU Radio + SciPy",
         "database": "SQLite",
+        "authentication": "Firebase",
     }
 
-
-# ============================================================
-# ANALYZE SIGNAL
-# ============================================================
 
 @router.post("/analyze")
 async def analyze_file(
     file: UploadFile = File(...),
     iq_sample_rate: float | None = Form(None),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    End-to-end RF analysis API.
+    Authenticated end-to-end RF analysis API.
 
-    Pipeline:
-        1. File ingestion
-        2. Signal normalization
-        3. Spectrum analysis
-        4. Waterfall/STFT analysis
-        5. RF signal detection
-        6. Per-signal frequency isolation
-        7. Per-signal metrics
-        8. Per-signal modulation classification
-        9. Save analysis to SQLite history
+    The Firebase UID is attached to every saved analysis.
     """
 
     filename = file.filename or ""
@@ -64,13 +64,20 @@ async def analyze_file(
             detail="Unsupported file format. Use .iq or .wav",
         )
 
+    user_id = current_user.get("uid")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Firebase token does not contain a UID",
+        )
+
     temporary_path = None
 
     try:
-        # ========================================================
+        # =========================================================
         # 1. Save uploaded file temporarily
-        # ========================================================
-
+        # =========================================================
         with NamedTemporaryFile(
             suffix=suffix,
             delete=False,
@@ -78,10 +85,9 @@ async def analyze_file(
             temp.write(await file.read())
             temporary_path = temp.name
 
-        # ========================================================
+        # =========================================================
         # 2. Load signal
-        # ========================================================
-
+        # =========================================================
         signal = load_signal(
             temporary_path,
             iq_sample_rate=iq_sample_rate,
@@ -90,10 +96,9 @@ async def analyze_file(
         samples = signal.samples
         sample_rate = float(signal.sample_rate)
 
-        # ========================================================
-        # 3. Build metadata
-        # ========================================================
-
+        # =========================================================
+        # 3. Metadata
+        # =========================================================
         metadata = {
             "source_format": signal.source_format,
             "sample_rate": sample_rate,
@@ -116,19 +121,17 @@ async def analyze_file(
                 np.mean(amplitudes ** 2)
             )
 
-        # ========================================================
+        # =========================================================
         # 4. Global spectrum + waterfall
-        # ========================================================
-
+        # =========================================================
         analysis = analyze_signal(
             samples,
             sample_rate,
         )
 
-        # ========================================================
+        # =========================================================
         # 5. Detect RF signals
-        # ========================================================
-
+        # =========================================================
         detection = detect_signals(
             samples,
             sample_rate,
@@ -139,10 +142,9 @@ async def analyze_file(
             [],
         )
 
-        # ========================================================
-        # 6. Analyze every detected signal independently
-        # ========================================================
-
+        # =========================================================
+        # 6. Analyze detected signals independently
+        # =========================================================
         per_signal = analyze_all_detected_signals(
             samples=samples,
             sample_rate=sample_rate,
@@ -154,10 +156,9 @@ async def analyze_file(
             [],
         )
 
-        # ========================================================
-        # 7. Enrich detector candidates
-        # ========================================================
-
+        # =========================================================
+        # 7. Enrich candidates
+        # =========================================================
         enriched_candidates = []
 
         for index, candidate in enumerate(candidates):
@@ -172,7 +173,7 @@ async def analyze_file(
                 )
 
                 modulation = detailed.get(
-                    "modulation",
+                    "modulation"
                 )
 
                 enriched["metrics"] = metrics
@@ -185,8 +186,8 @@ async def analyze_file(
                 )
 
                 if modulation is not None:
-                    enriched["modulation"] = modulation.get(
-                        "modulation"
+                    enriched["modulation"] = (
+                        modulation.get("modulation")
                     )
 
                     enriched["modulation_confidence"] = (
@@ -196,7 +197,6 @@ async def analyze_file(
                     enriched["modulation_analysis"] = (
                         modulation
                     )
-
                 else:
                     enriched["modulation"] = None
                     enriched["modulation_confidence"] = None
@@ -209,12 +209,13 @@ async def analyze_file(
                 enriched["modulation_confidence"] = None
                 enriched["modulation_analysis"] = None
 
-            enriched_candidates.append(enriched)
+            enriched_candidates.append(
+                enriched
+            )
 
-        # ========================================================
+        # =========================================================
         # 8. Top-level modulation
-        # ========================================================
-
+        # =========================================================
         top_level_modulation = None
 
         if detailed_signals:
@@ -222,10 +223,9 @@ async def analyze_file(
                 "modulation"
             )
 
-        # ========================================================
+        # =========================================================
         # 9. Detection response
-        # ========================================================
-
+        # =========================================================
         detections = {
             "candidate_count": len(
                 enriched_candidates
@@ -237,10 +237,9 @@ async def analyze_file(
             "signals": detailed_signals,
         }
 
-        # ========================================================
-        # 10. Final response
-        # ========================================================
-
+        # =========================================================
+        # 10. Final analysis result
+        # =========================================================
         result = {
             "status": "success",
             "filename": filename,
@@ -274,40 +273,46 @@ async def analyze_file(
             "errors": [],
         }
 
-        # ========================================================
-        # 11. Save analysis to SQLite history
-        # ========================================================
+        # =========================================================
+        # 11. Save authenticated history record
+        # =========================================================
+        first_candidate = (
+            enriched_candidates[0]
+            if enriched_candidates
+            else {}
+        )
 
-        history_row = SignalAnalysis(
+        first_metrics = first_candidate.get(
+            "metrics",
+            {},
+        )
+
+        history_record = SignalAnalysis(
+            user_id=user_id,
             filename=filename,
             source_format=signal.source_format,
             sample_rate=int(sample_rate),
             duration_seconds=float(
                 signal.duration_seconds
             ),
-            peak_frequency_hz=(
-                result["spectrum"].get(
-                    "peak_frequency_hz"
-                )
-                if result["spectrum"]
-                else None
+            peak_frequency_hz=first_candidate.get(
+                "peak_frequency_hz"
             ),
-            occupied_bandwidth_hz=(
-                result["spectrum"].get(
-                    "occupied_bandwidth_hz"
-                )
-                if result["spectrum"]
-                else None
+            occupied_bandwidth_hz=first_candidate.get(
+                "bandwidth_hz"
             ),
-            snr_db=(
-                result["spectrum"].get("snr_db")
-                if result["spectrum"]
-                else None
+            snr_db=first_candidate.get(
+                "snr_db"
             ),
             modulation=(
-                top_level_modulation.get("modulation")
-                if top_level_modulation
-                else None
+                first_candidate.get("modulation")
+                or (
+                    top_level_modulation.get(
+                        "modulation"
+                    )
+                    if top_level_modulation
+                    else None
+                )
             ),
             detection_count=len(
                 enriched_candidates
@@ -316,16 +321,18 @@ async def analyze_file(
                 result,
                 default=str,
             ),
+            created_at=datetime.now(
+                timezone.utc
+            ),
         )
 
-        db.add(history_row)
+        db.add(history_record)
         db.commit()
-        db.refresh(history_row)
+        db.refresh(history_record)
 
-        # Expose the database ID to the frontend.
-        result["history_id"] = history_row.id
+        result["history_id"] = history_record.id
         result["created_at"] = (
-            history_row.created_at.isoformat()
+            history_record.created_at.isoformat()
         )
 
         return result
@@ -342,10 +349,9 @@ async def analyze_file(
         ) from exc
 
     finally:
-        # ========================================================
-        # 12. Always clean up temporary file
-        # ========================================================
-
+        # =========================================================
+        # 12. Clean up temporary file
+        # =========================================================
         if temporary_path:
             Path(
                 temporary_path
@@ -354,22 +360,29 @@ async def analyze_file(
             )
 
 
-# ============================================================
-# HISTORY
-# ============================================================
-
 @router.get("/history")
 def get_history(
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Return saved RF analyses.
-
-    Newest analyses are returned first.
+    Return analysis history belonging only to the
+    currently authenticated Firebase user.
     """
+
+    user_id = current_user.get("uid")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Firebase token does not contain a UID",
+        )
 
     rows = (
         db.query(SignalAnalysis)
+        .filter(
+            SignalAnalysis.user_id == user_id
+        )
         .order_by(
             SignalAnalysis.created_at.desc()
         )
@@ -386,17 +399,13 @@ def get_history(
                 "source_format": row.source_format,
                 "sample_rate": row.sample_rate,
                 "duration_seconds": row.duration_seconds,
-                "peak_frequency_hz": (
-                    row.peak_frequency_hz
-                ),
+                "peak_frequency_hz": row.peak_frequency_hz,
                 "occupied_bandwidth_hz": (
                     row.occupied_bandwidth_hz
                 ),
                 "snr_db": row.snr_db,
                 "modulation": row.modulation,
-                "detection_count": (
-                    row.detection_count
-                ),
+                "detection_count": row.detection_count,
                 "created_at": (
                     row.created_at.isoformat()
                 ),
@@ -410,23 +419,30 @@ def get_history(
     }
 
 
-# ============================================================
-# GET ONE HISTORY ITEM
-# ============================================================
-
 @router.get("/history/{analysis_id}")
 def get_history_item(
     analysis_id: int,
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Return the complete saved analysis.
+    Return one analysis only if it belongs to
+    the currently authenticated Firebase user.
     """
+
+    user_id = current_user.get("uid")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Firebase token does not contain a UID",
+        )
 
     row = (
         db.query(SignalAnalysis)
         .filter(
-            SignalAnalysis.id == analysis_id
+            SignalAnalysis.id == analysis_id,
+            SignalAnalysis.user_id == user_id,
         )
         .first()
     )
@@ -434,25 +450,17 @@ def get_history_item(
     if row is None:
         raise HTTPException(
             status_code=404,
-            detail="Analysis history item not found.",
+            detail="Analysis not found",
         )
 
     try:
-        result = json.loads(
-            row.result_json
-        )
+        result = json.loads(row.result_json)
     except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=500,
-            detail="Saved analysis data is invalid.",
-        )
+        result = {}
 
     result["history_id"] = row.id
     result["created_at"] = (
         row.created_at.isoformat()
     )
 
-    return {
-        "status": "success",
-        "analysis": result,
-    }
+    return result

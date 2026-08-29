@@ -15,6 +15,13 @@ class SignalAnalysis(Base):
         index=True,
     )
 
+    # Firebase Authentication UID
+    user_id: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+        nullable=False,
+    )
+
     filename: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
