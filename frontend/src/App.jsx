@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Float, Stars } from "@react-three/drei";
-
 import AuthGate from "./auth/AuthGate.jsx";
-
 import { auth } from "./firebase/firebase";
-
 import {
   saveAnalysisHistory,
   loadAnalysisHistory,
@@ -23,9 +19,14 @@ import {
   Upload,
   Waves,
   Zap,
+  History,
+  Home,
+  LayoutDashboard,
+  Monitor,
+  RefreshCw,
   Clock3,
   Database,
-  RefreshCw,
+  ChevronRight,
 } from "lucide-react";
 
 import {
@@ -39,12 +40,15 @@ import {
 } from "recharts";
 
 import "./styles.css";
-
 import Workspace from "./components/workspace/Workspace.jsx";
 
 
+/* ============================================================
+   RF VISUAL CORE
+   ============================================================ */
+
 function RFCore() {
-  const group = useRef();
+  const group = useRef(null);
   const rings = useRef([]);
 
   const particles = useMemo(() => {
@@ -74,11 +78,8 @@ function RFCore() {
     rings.current.forEach((ring, index) => {
       if (!ring) return;
 
-      ring.rotation.z +=
-        delta * (0.12 + index * 0.04);
-
-      ring.rotation.x +=
-        delta * (0.05 + index * 0.02);
+      ring.rotation.z += delta * (0.12 + index * 0.04);
+      ring.rotation.x += delta * (0.05 + index * 0.02);
     });
   });
 
@@ -116,9 +117,7 @@ function RFCore() {
           }}
           scale={scale}
         >
-          <torusGeometry
-            args={[1.1, 0.012, 16, 128]}
-          />
+          <torusGeometry args={[1.1, 0.012, 16, 128]} />
 
           <meshStandardMaterial
             color="#38bdf8"
@@ -131,14 +130,8 @@ function RFCore() {
       ))}
 
       {particles.map((particle, index) => (
-        <mesh
-          key={index}
-          position={particle.position}
-        >
-          <sphereGeometry
-            args={[0.018, 8, 8]}
-          />
-
+        <mesh key={index} position={particle.position}>
+          <sphereGeometry args={[0.018, 8, 8]} />
           <meshBasicMaterial color="#67e8f9" />
         </mesh>
       ))}
@@ -196,6 +189,10 @@ function RFScene() {
 }
 
 
+/* ============================================================
+   SMALL UI COMPONENTS
+   ============================================================ */
+
 function StatCard({
   icon: Icon,
   label,
@@ -233,19 +230,15 @@ function SignalBars({ active = true }) {
         active ? "active" : ""
       }`}
     >
-      {Array.from({ length: 18 }).map(
-        (_, index) => (
-          <span
-            key={index}
-            style={{
-              animationDelay: `${index * 55}ms`,
-              height: `${
-                18 + ((index * 17) % 60)
-              }%`,
-            }}
-          />
-        )
-      )}
+      {Array.from({ length: 18 }).map((_, index) => (
+        <span
+          key={index}
+          style={{
+            animationDelay: `${index * 55}ms`,
+            height: `${18 + ((index * 17) % 60)}%`,
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -264,56 +257,434 @@ function formatHz(value) {
   const abs = Math.abs(numericValue);
 
   if (abs >= 1_000_000) {
-    return `${(
-      numericValue / 1_000_000
-    ).toFixed(2)} MHz`;
+    return `${(numericValue / 1_000_000).toFixed(2)} MHz`;
   }
 
   if (abs >= 1_000) {
-    return `${(
-      numericValue / 1_000
-    ).toFixed(2)} kHz`;
+    return `${(numericValue / 1_000).toFixed(2)} kHz`;
   }
 
   return `${numericValue.toFixed(1)} Hz`;
 }
 
 
-function formatHistoryDate(value) {
-  if (!value) {
-    return "Unknown date";
-  }
+/* ============================================================
+   GLOBAL LOADING SCREEN
+   ============================================================ */
 
-  try {
-    let date;
-
-    if (
-      typeof value === "object" &&
-      typeof value.toDate === "function"
-    ) {
-      date = value.toDate();
-    } else {
-      date = new Date(value);
-    }
-
-    if (Number.isNaN(date.getTime())) {
-      return "Unknown date";
-    }
-
-    return date.toLocaleString();
-  } catch {
-    return "Unknown date";
-  }
-}
-
-
-function getHistoryModulation(record) {
+function LoadingScreen({
+  message = "PROCESSING SIGNAL",
+  detail = "RF INTELLIGENCE ENGINE",
+}) {
   return (
-    record?.modulation?.name ||
-    "Unknown"
+    <div className="sage-loading-screen">
+      <div className="sage-loading-grid" />
+
+      <div className="sage-loading-content">
+        <div className="sage-loading-core">
+          <div className="sage-loading-orbit orbit-one" />
+          <div className="sage-loading-orbit orbit-two" />
+          <div className="sage-loading-orbit orbit-three" />
+
+          <div className="sage-loading-icon">
+            <Radio size={31} />
+          </div>
+        </div>
+
+        <div className="sage-loading-brand">
+          SAGE<span>-RF</span>
+        </div>
+
+        <div className="sage-loading-title">
+          {message}
+        </div>
+
+        <div className="sage-loading-subtitle">
+          {detail}
+        </div>
+
+        <div className="sage-loading-bars">
+          {Array.from({ length: 10 }).map((_, index) => (
+            <span
+              key={index}
+              style={{
+                animationDelay: `${index * 80}ms`,
+              }}
+            />
+          ))}
+        </div>
+
+        <div className="sage-loading-status">
+          <span className="status-dot online" />
+          <span>SYSTEM ACTIVE</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
+
+/* ============================================================
+   GLOBAL NAVIGATION
+   ============================================================ */
+
+function GlobalNavigation({
+  activePage,
+  onNavigate,
+  historyCount = 0,
+  backendOnline,
+}) {
+  const items = [
+    {
+      id: "HOME",
+      label: "HOME",
+      icon: Home,
+    },
+    {
+      id: "ANALYSIS",
+      label: "ANALYSIS",
+      icon: LayoutDashboard,
+    },
+    {
+      id: "HISTORY",
+      label: "HISTORY",
+      icon: History,
+    },
+    {
+      id: "WORKSTATION",
+      label: "WORKSTATION",
+      icon: Monitor,
+    },
+  ];
+
+  return (
+    <nav className="sage-global-nav">
+      <div className="sage-nav-brand">
+        <div className="brand-mark">
+          <Radio size={18} />
+        </div>
+
+        <div>
+          <strong>
+            SAGE<span>-RF</span>
+          </strong>
+
+          <small>
+            SIGNAL INTELLIGENCE
+          </small>
+        </div>
+      </div>
+
+      <div className="sage-nav-tabs">
+        {items.map((item) => {
+          const Icon = item.icon;
+          const active = activePage === item.id;
+
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={
+                active
+                  ? "sage-nav-tab active"
+                  : "sage-nav-tab"
+              }
+              onClick={() => onNavigate(item.id)}
+            >
+              <Icon size={15} />
+
+              <span>
+                {item.label}
+              </span>
+
+              {item.id === "HISTORY" &&
+                historyCount > 0 && (
+                  <b>
+                    {historyCount}
+                  </b>
+                )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="sage-nav-status">
+        <span
+          className={`status-dot ${
+            backendOnline ? "online" : ""
+          }`}
+        />
+
+        <span>
+          {backendOnline
+            ? "ENGINE ONLINE"
+            : "ENGINE OFFLINE"}
+        </span>
+      </div>
+    </nav>
+  );
+}
+
+
+/* ============================================================
+   HISTORY PAGE
+   ============================================================ */
+
+function HistoryPage({
+  history,
+  loading,
+  error,
+  onRefresh,
+  onHome,
+  onOpenAnalysis,
+}) {
+  return (
+    <div className="sage-page">
+      <div className="sage-page-header">
+        <div>
+          <div className="eyebrow">
+            <span />
+            SIGNAL ARCHIVE
+          </div>
+
+          <h1>
+            Analysis history
+          </h1>
+
+          <p>
+            Your previously analyzed RF
+            recordings are stored securely
+            under your Firebase account.
+          </p>
+        </div>
+
+        <div className="sage-page-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            <RefreshCw
+              size={15}
+              className={loading ? "sage-spin" : ""}
+            />
+
+            REFRESH
+          </button>
+
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onHome}
+          >
+            <Home size={15} />
+            HOME
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="error-box">
+          <strong>
+            History error
+          </strong>
+
+          <span>
+            {error}
+          </span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="history-loading">
+          <div className="history-loading-icon">
+            <Database size={23} />
+          </div>
+
+          <strong>
+            LOADING SIGNAL HISTORY
+          </strong>
+
+          <span>
+            Retrieving your analysis archive...
+          </span>
+
+          <div className="history-loading-bar">
+            <span />
+          </div>
+        </div>
+      ) : history.length === 0 ? (
+        <div className="history-empty">
+          <div className="history-empty-icon">
+            <History size={30} />
+          </div>
+
+          <h3>
+            No analysis history yet
+          </h3>
+
+          <p>
+            Analyze an RF recording and
+            your result will automatically
+            appear here.
+          </p>
+
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onHome}
+          >
+            <Upload size={16} />
+            ANALYZE A SIGNAL
+          </button>
+        </div>
+      ) : (
+        <div className="history-grid">
+          {history.map((record) => {
+            const uploaded =
+              record.uploadedAt?.toDate
+                ? record.uploadedAt.toDate()
+                : null;
+
+            const metadata =
+              record.metadata || {};
+
+            const spectrum =
+              record.spectrum || {};
+
+            const modulation =
+              record.modulation || {};
+
+            return (
+              <article
+                className="history-card"
+                key={record.id}
+              >
+                <div className="history-card-top">
+                  <div className="history-file-icon">
+                    <FileSignal size={19} />
+                  </div>
+
+                  <div className="history-file-info">
+                    <strong>
+                      {record.filename ||
+                        "Untitled signal"}
+                    </strong>
+
+                    <span>
+                      {record.fileType ||
+                        "RF recording"}
+                    </span>
+                  </div>
+
+                  <span className="history-card-status">
+                    VERIFIED
+                  </span>
+                </div>
+
+                <div className="history-time">
+                  <Clock3 size={13} />
+
+                  {uploaded
+                    ? uploaded.toLocaleString()
+                    : "Recently analyzed"}
+                </div>
+
+                <div className="history-metrics">
+                  <div>
+                    <span>
+                      SAMPLE RATE
+                    </span>
+
+                    <strong>
+                      {metadata.sample_rate != null
+                        ? `${Number(
+                            metadata.sample_rate
+                          ).toLocaleString()} Hz`
+                        : "—"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      DURATION
+                    </span>
+
+                    <strong>
+                      {metadata.duration_seconds != null
+                        ? `${Number(
+                            metadata.duration_seconds
+                          ).toFixed(3)} s`
+                        : "—"}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      SIGNALS
+                    </span>
+
+                    <strong>
+                      {record.detectionCount ??
+                        record.detections
+                          ?.candidate_count ??
+                        0}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>
+                      SNR
+                    </span>
+
+                    <strong>
+                      {spectrum.snr_db != null
+                        ? `${Number(
+                            spectrum.snr_db
+                          ).toFixed(1)} dB`
+                        : "—"}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="history-card-footer">
+                  <div className="history-modulation">
+                    <span>
+                      MODULATION
+                    </span>
+
+                    <strong>
+                      {modulation.modulation ||
+                        modulation.name ||
+                        "UNCLASSIFIED"}
+                    </strong>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="history-open-button"
+                    onClick={() =>
+                      onOpenAnalysis(record)
+                    }
+                  >
+                    VIEW
+                    <ChevronRight size={15} />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ============================================================
+   APP
+   ============================================================ */
 
 function App({ user }) {
   const [history, setHistory] = useState([]);
@@ -322,19 +693,16 @@ function App({ user }) {
   const [historyError, setHistoryError] =
     useState("");
 
-  const [file, setFile] = useState(null);
+  const [activePage, setActivePage] =
+    useState("HOME");
 
+  const [file, setFile] = useState(null);
   const [sampleRate, setSampleRate] =
     useState("48000");
 
-  const [loading, setLoading] =
-    useState(false);
-
-  const [result, setResult] =
-    useState(null);
-
-  const [error, setError] =
-    useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
 
   const [backendOnline, setBackendOnline] =
     useState(false);
@@ -354,24 +722,110 @@ function App({ user }) {
   const [audioDuration, setAudioDuration] =
     useState(0);
 
+  const [
+    showLoadingScreen,
+    setShowLoadingScreen,
+  ] = useState(false);
+
+  const [
+    loadingMessage,
+    setLoadingMessage,
+  ] = useState("");
+
   const audioRef = useRef(null);
   const fileInput = useRef(null);
 
 
-  /*
-   * LOAD FIREBASE ANALYSIS HISTORY
-   *
-   * Each authenticated user gets their own
-   * users/{uid}/analyses collection.
-   */
+  /* ==========================================================
+     FILE SELECTION
+     ========================================================== */
+
+  function handleFileSelect(event) {
+    const selectedFile =
+      event.target.files?.[0] || null;
+
+    if (!selectedFile) {
+      return;
+    }
+
+    setFile(selectedFile);
+    setError("");
+    setResult(null);
+    setWorkspaceOpen(false);
+    setActivePage("HOME");
+    setIsPlaying(false);
+
+    /*
+     * Allows selecting the same file again
+     * after clearing it.
+     */
+    event.target.value = "";
+  }
+
+
+  function openFilePicker() {
+    fileInput.current?.click();
+  }
+
+
+  function clearSelectedFile() {
+    setFile(null);
+    setResult(null);
+    setError("");
+    setWorkspaceOpen(false);
+    setActivePage("HOME");
+    setIsPlaying(false);
+    setAudioUrl("");
+    setWaveformSamples([]);
+    setAudioDuration(0);
+  }
+
+
+  /* ==========================================================
+     LOAD FIREBASE HISTORY
+     ========================================================== */
+
+  async function refreshHistory() {
+    if (!user) {
+      setHistory([]);
+      return;
+    }
+
+    setHistoryLoading(true);
+    setHistoryError("");
+
+    try {
+      const records =
+        await loadAnalysisHistory(user);
+
+      setHistory(records);
+
+      console.log(
+        "SAGE-RF history loaded:",
+        records.length
+      );
+    } catch (historyLoadError) {
+      console.error(
+        "SAGE-RF history load failed:",
+        historyLoadError
+      );
+
+      setHistoryError(
+        historyLoadError.message ||
+          "Unable to load analysis history."
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+
   useEffect(() => {
     let cancelled = false;
 
     async function loadHistory() {
       if (!user) {
         setHistory([]);
-        setHistoryError("");
-        setHistoryLoading(false);
         return;
       }
 
@@ -398,7 +852,7 @@ function App({ user }) {
 
         if (!cancelled) {
           setHistoryError(
-            historyLoadError?.message ||
+            historyLoadError.message ||
               "Unable to load analysis history."
           );
         }
@@ -417,9 +871,10 @@ function App({ user }) {
   }, [user]);
 
 
-  /*
-   * SCROLL PROGRESS
-   */
+  /* ==========================================================
+     SCROLL PROGRESS
+     ========================================================== */
+
   useEffect(() => {
     const updateScrollProgress = () => {
       const maxScroll =
@@ -469,48 +924,81 @@ function App({ user }) {
   }, []);
 
 
-  /*
-   * BACKEND HEALTH CHECK
-   */
+  /* ==========================================================
+     BACKEND HEALTH
+     ========================================================== */
+
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/health")
-      .then((response) => {
+    async function checkBackend() {
+      try {
+        const response =
+          await fetch("/api/health");
+
         if (!response.ok) {
-          throw new Error(
-            "Backend health check failed."
-          );
+          throw new Error();
         }
 
-        return response.json();
-      })
-      .then(() => {
+        await response.json();
+
         if (!cancelled) {
           setBackendOnline(true);
         }
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) {
           setBackendOnline(false);
         }
-      });
+      }
+    }
+
+    checkBackend();
+
+    const interval =
+      window.setInterval(
+        checkBackend,
+        15000
+      );
 
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, []);
 
 
-  /*
-   * CREATE LOCAL AUDIO URL + DECODE WAV
-   */
+  /* ==========================================================
+     AUDIO / WAV PROCESSING
+     ========================================================== */
+
   useEffect(() => {
     if (!file) {
       setAudioUrl("");
       setWaveformSamples([]);
       setAudioDuration(0);
-      return undefined;
+      return;
+    }
+
+    const isIQ =
+      file.name
+        .toLowerCase()
+        .endsWith(".iq");
+
+    /*
+     * IQ files are raw complex samples,
+     * not browser-playable audio.
+     *
+     * Do not send IQ data through
+     * AudioContext.decodeAudioData().
+     *
+     * The backend/workstation is responsible
+     * for IQ visualization.
+     */
+    if (isIQ) {
+      setAudioUrl("");
+      setWaveformSamples([]);
+      setAudioDuration(0);
+      return;
     }
 
     const url =
@@ -602,9 +1090,7 @@ function App({ user }) {
             );
         }
 
-        setWaveformSamples(
-          samples
-        );
+        setWaveformSamples(samples);
 
         console.log(
           "SAGE-RF WAV decoded:",
@@ -625,10 +1111,8 @@ function App({ user }) {
           decodeError
         );
 
-        if (!cancelled) {
-          setWaveformSamples([]);
-          setAudioDuration(0);
-        }
+        setWaveformSamples([]);
+        setAudioDuration(0);
       } finally {
         if (context) {
           try {
@@ -649,9 +1133,10 @@ function App({ user }) {
   }, [file]);
 
 
-  /*
-   * DISPLAY SPECTRUM DATA
-   */
+  /* ==========================================================
+     SPECTRUM DISPLAY DATA
+     ========================================================== */
+
   const spectrumData = useMemo(() => {
     const spectrum =
       result?.spectrum;
@@ -661,14 +1146,12 @@ function App({ user }) {
     }
 
     const center =
-      Number(
-        spectrum.peak_frequency_hz
-      ) || 0;
+      spectrum.peak_frequency_hz ??
+      0;
 
     const bandwidth =
-      Number(
-        spectrum.occupied_bandwidth_hz
-      ) || 1000;
+      spectrum.occupied_bandwidth_hz ??
+      1000;
 
     return Array.from(
       { length: 80 },
@@ -685,7 +1168,8 @@ function App({ user }) {
 
         const distance =
           Math.abs(
-            frequency - center
+            frequency -
+              center
           );
 
         const peak =
@@ -701,7 +1185,9 @@ function App({ user }) {
 
         const noise =
           0.08 +
-          Math.sin(index * 1.7) *
+          Math.sin(
+            index * 1.7
+          ) *
             0.025;
 
         return {
@@ -715,19 +1201,97 @@ function App({ user }) {
   }, [result]);
 
 
-  /*
-   * ANALYZE SIGNAL
-   */
+  /* ==========================================================
+     NAVIGATION
+     ========================================================== */
+
+  function navigateTo(page) {
+    if (page === "WORKSTATION") {
+      if (!result) {
+        setActivePage("HOME");
+        return;
+      }
+
+      setShowLoadingScreen(true);
+      setLoadingMessage(
+        "INITIALIZING WORKSTATION"
+      );
+
+      window.setTimeout(() => {
+        setWorkspaceOpen(true);
+        setActivePage("WORKSTATION");
+        setShowLoadingScreen(false);
+      }, 900);
+
+      return;
+    }
+
+    if (page === "ANALYSIS" && !result) {
+      setActivePage("HOME");
+      return;
+    }
+
+    if (page === "HISTORY") {
+      setWorkspaceOpen(false);
+      setActivePage("HISTORY");
+      return;
+    }
+
+    if (page === "HOME") {
+      setWorkspaceOpen(false);
+    }
+
+    setActivePage(page);
+  }
+
+
+  /* ==========================================================
+     OPEN HISTORY RECORD
+     ========================================================== */
+
+  function openHistoryRecord(record) {
+    if (!record) {
+      return;
+    }
+
+    /*
+     * Historical records contain the
+     * analysis summary, but the original
+     * uploaded binary is not stored.
+     *
+     * Therefore we cannot safely reopen
+     * the old recording inside the live
+     * workstation.
+     *
+     * We simply keep the user on History
+     * instead of displaying a fake error.
+     */
+
+    setActivePage("HISTORY");
+
+    console.log(
+      "SAGE-RF historical analysis selected:",
+      record.filename || "signal"
+    );
+  }
+
+
+  /* ==========================================================
+     ANALYZE SIGNAL
+     ========================================================== */
+
   async function analyzeSignal() {
     if (!file) {
-      setError(
-        "Please select an RF recording first."
-      );
       return;
     }
 
     setLoading(true);
     setError("");
+
+    setShowLoadingScreen(true);
+    setLoadingMessage(
+      "ANALYZING SIGNAL"
+    );
 
     try {
       const formData =
@@ -752,10 +1316,12 @@ function App({ user }) {
       /*
        * Firebase authentication.
        *
-       * The backend requires:
+       * The backend expects:
        *
-       * Authorization: Bearer <Firebase ID token>
+       * Authorization:
+       * Bearer <Firebase ID token>
        */
+
       const currentUser =
         auth.currentUser;
 
@@ -765,13 +1331,16 @@ function App({ user }) {
         );
       }
 
-      /*
-       * Force-refreshing is not necessary for
-       * normal requests. Firebase automatically
-       * refreshes the token when required.
-       */
+      setLoadingMessage(
+        "AUTHENTICATING SIGNAL SESSION"
+      );
+
       const idToken =
         await currentUser.getIdToken();
+
+      setLoadingMessage(
+        "PROCESSING RF DATA"
+      );
 
       const response =
         await fetch(
@@ -788,45 +1357,45 @@ function App({ user }) {
           }
         );
 
-      let data = null;
+      let data;
 
       try {
-        data =
-          await response.json();
+        data = await response.json();
       } catch {
         throw new Error(
-          "The analysis server returned an invalid response."
+          "The analysis engine returned an invalid response."
         );
       }
 
       if (!response.ok) {
         throw new Error(
-          data?.detail ||
+          data.detail ||
             "RF analysis failed."
         );
       }
 
-      /*
-       * Show analysis immediately.
-       */
+      setLoadingMessage(
+        "FINALIZING SIGNAL INTELLIGENCE"
+      );
+
       setResult(data);
-
+      setActivePage("ANALYSIS");
 
       /*
-       * SAVE ANALYSIS HISTORY
+       * Save analysis to Firebase history.
        *
-       * Firestore path:
-       *
-       * users/{uid}/analyses/{analysisId}
+       * A history-save failure must NOT
+       * destroy a successful RF analysis.
        */
+
       try {
-        const historyUser =
+        const authenticatedUser =
           auth.currentUser;
 
-        if (historyUser) {
+        if (authenticatedUser) {
           const historyId =
             await saveAnalysisHistory(
-              historyUser,
+              authenticatedUser,
               file,
               data
             );
@@ -836,116 +1405,42 @@ function App({ user }) {
             historyId
           );
 
-
           /*
-           * Immediately update the UI instead
-           * of waiting for another login.
+           * Refresh visible history
+           * after a successful save.
            */
-          const newHistoryRecord = {
-            id: historyId,
 
-            filename:
-              file.name,
+          try {
+            const updatedHistory =
+              await loadAnalysisHistory(
+                authenticatedUser
+              );
 
-            fileSize:
-              file.size,
-
-            fileType:
-              file.type ||
-              "unknown",
-
-            uploadedAt:
-              new Date(),
-
-            metadata: {
-              sourceFormat:
-                data.metadata
-                  ?.source_format ||
-                "",
-
-              sampleRate:
-                data.metadata
-                  ?.sample_rate ||
-                null,
-
-              duration:
-                data.metadata
-                  ?.duration_seconds ||
-                null,
-
-              sampleCount:
-                data.metadata
-                  ?.sample_count ||
-                null,
-
-              meanPower:
-                data.metadata
-                  ?.mean_power ||
-                null,
-            },
-
-            spectrum: {
-              peakFrequency:
-                data.spectrum
-                  ?.peak_frequency_hz ||
-                null,
-
-              occupiedBandwidth:
-                data.spectrum
-                  ?.occupied_bandwidth_hz ||
-                null,
-
-              snr:
-                data.spectrum
-                  ?.snr_db ||
-                null,
-            },
-
-            modulation: {
-              name:
-                data.modulation
-                  ?.modulation ||
-                null,
-
-              confidence:
-                data.modulation
-                  ?.confidence ||
-                null,
-            },
-
-            detectionCount:
-              data.detections
-                ?.candidate_count ||
-              0,
-          };
-
-          setHistory(
-            (previousHistory) => [
-              newHistoryRecord,
-              ...previousHistory,
-            ]
-          );
-
-          setHistoryError("");
+            setHistory(
+              updatedHistory
+            );
+          } catch (refreshError) {
+            console.warn(
+              "SAGE-RF history refresh failed:",
+              refreshError
+            );
+          }
         } else {
           console.warn(
             "No authenticated Firebase user. History was not saved."
           );
         }
-      } catch (historySaveError) {
-        /*
-         * History failure should NOT make the
-         * actual RF analysis fail.
-         */
+      } catch (historyError) {
         console.error(
           "SAGE-RF history save failed:",
-          historySaveError
+          historyError
         );
 
-        setHistoryError(
-          historySaveError?.message ||
-            "Analysis completed, but history could not be saved."
-        );
+        /*
+         * Do not show this as the main
+         * analysis error because the RF
+         * analysis itself succeeded.
+         */
       }
     } catch (err) {
       console.error(
@@ -954,18 +1449,23 @@ function App({ user }) {
       );
 
       setError(
-        err?.message ||
+        err.message ||
           "Unable to analyze signal."
       );
     } finally {
       setLoading(false);
+
+      window.setTimeout(() => {
+        setShowLoadingScreen(false);
+      }, 500);
     }
   }
 
 
-  /*
-   * PLAY / PAUSE
-   */
+  /* ==========================================================
+     PLAYBACK
+     ========================================================== */
+
   async function togglePlayback() {
     const audio =
       audioRef.current;
@@ -997,9 +1497,6 @@ function App({ user }) {
   }
 
 
-  /*
-   * STOP PLAYBACK
-   */
   function stopPlayback() {
     const audio =
       audioRef.current;
@@ -1014,6 +1511,10 @@ function App({ user }) {
   }
 
 
+  /* ==========================================================
+     RESULT DATA
+     ========================================================== */
+
   const detections =
     result?.detections?.candidates ||
     [];
@@ -1022,45 +1523,173 @@ function App({ user }) {
     result?.modulation;
 
 
-  /*
-   * WORKSTATION
-   */
-  if (
-    workspaceOpen &&
-    result
-  ) {
+  /* ==========================================================
+     GLOBAL LOADING SCREEN
+     ========================================================== */
+
+  if (showLoadingScreen) {
     return (
-      <Workspace
-        result={result}
-        sourceFile={file}
-        audioUrl={audioUrl}
-        audioRef={audioRef}
-        waveformSamples={
-          waveformSamples
+      <LoadingScreen
+        message={
+          loadingMessage ||
+          "PROCESSING SIGNAL"
         }
-        audioDuration={
-          audioDuration
-        }
-        isPlaying={
-          isPlaying
-        }
-        onPlayPause={
-          togglePlayback
-        }
-        onStop={
-          stopPlayback
-        }
-        onUpload={() =>
-          fileInput.current?.click()
+        detail={
+          loading
+            ? "RF ANALYSIS ENGINE"
+            : "SIGNAL WORKSTATION"
         }
       />
     );
   }
 
 
+  /* ==========================================================
+     WORKSTATION
+     ========================================================== */
+
+  if (
+    workspaceOpen &&
+    result
+  ) {
+    return (
+      <div className="sage-workstation-shell">
+        <div className="sage-workstation-nav">
+          <button
+            type="button"
+            className="sage-workstation-home"
+            onClick={() => {
+              setWorkspaceOpen(false);
+              setActivePage("HOME");
+            }}
+          >
+            <Home size={15} />
+            HOME
+          </button>
+
+          <button
+            type="button"
+            className="sage-workstation-nav-item"
+            onClick={() =>
+              setActivePage("ANALYSIS")
+            }
+          >
+            <LayoutDashboard size={15} />
+            ANALYSIS
+          </button>
+
+          <button
+            type="button"
+            className="sage-workstation-nav-item active"
+          >
+            <Monitor size={15} />
+            WORKSTATION
+          </button>
+
+          <button
+            type="button"
+            className="sage-workstation-nav-item"
+            onClick={() => {
+              setWorkspaceOpen(false);
+              setActivePage("HISTORY");
+            }}
+          >
+            <History size={15} />
+            HISTORY
+          </button>
+
+          <div className="sage-workstation-nav-spacer" />
+
+          <span className="sage-workstation-file">
+            {result.filename ||
+              "UNTITLED CAPTURE"}
+          </span>
+        </div>
+
+        <Workspace
+          result={result}
+          sourceFile={file}
+          audioUrl={audioUrl}
+          audioRef={audioRef}
+          waveformSamples={waveformSamples}
+          audioDuration={audioDuration}
+          isPlaying={isPlaying}
+          onPlayPause={togglePlayback}
+          onStop={stopPlayback}
+          onUpload={openFilePicker}
+          onHome={() => {
+            setWorkspaceOpen(false);
+            setActivePage("HOME");
+          }}
+        />
+      </div>
+    );
+  }
+
+
+  /* ==========================================================
+     HISTORY PAGE
+     ========================================================== */
+
+  if (
+    activePage === "HISTORY"
+  ) {
+    return (
+      <div className="app-shell sage-app-page-shell">
+        <GlobalNavigation
+          activePage={activePage}
+          onNavigate={navigateTo}
+          historyCount={history.length}
+          backendOnline={backendOnline}
+        />
+
+        <HistoryPage
+          history={history}
+          loading={historyLoading}
+          error={historyError}
+          onRefresh={refreshHistory}
+          onHome={() =>
+            navigateTo("HOME")
+          }
+          onOpenAnalysis={openHistoryRecord}
+        />
+
+        <footer>
+          <div>
+            SAGE-RF / SIGNAL INTELLIGENCE
+          </div>
+
+          <div>
+            RF ANALYSIS ENGINE v1.0
+          </div>
+        </footer>
+
+        <input
+          ref={fileInput}
+          type="file"
+          accept=".iq,.wav"
+          hidden
+          onChange={handleFileSelect}
+        />
+      </div>
+    );
+  }
+
+
+  /* ==========================================================
+     MAIN APPLICATION
+     ========================================================== */
+
   return (
     <div className="app-shell">
       <div className="noise-layer" />
+
+      <GlobalNavigation
+        activePage={activePage}
+        onNavigate={navigateTo}
+        historyCount={history.length}
+        backendOnline={backendOnline}
+      />
 
       <header className="topbar">
         <div className="brand">
@@ -1096,6 +1725,10 @@ function App({ user }) {
 
 
       <main>
+        {/* =====================================================
+            HERO
+            ===================================================== */}
+
         <section className="hero cinematic-hero">
           <div className="hero-copy">
             <div className="eyebrow">
@@ -1134,6 +1767,57 @@ function App({ user }) {
                 MODULATION AI
               </span>
             </div>
+
+            <div className="hero-navigation-cards">
+              <button
+                type="button"
+                onClick={() =>
+                  navigateTo("HISTORY")
+                }
+              >
+                <History size={17} />
+
+                <span>
+                  <strong>
+                    ANALYSIS HISTORY
+                  </strong>
+
+                  <small>
+                    {history.length} stored
+                    analysis
+                    {history.length === 1
+                      ? ""
+                      : "es"}
+                  </small>
+                </span>
+
+                <ChevronRight size={16} />
+              </button>
+
+              {result && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigateTo("WORKSTATION")
+                  }
+                >
+                  <Monitor size={17} />
+
+                  <span>
+                    <strong>
+                      OPEN WORKSTATION
+                    </strong>
+
+                    <small>
+                      Inspect the active
+                      signal
+                    </small>
+                  </span>
+
+                  <ChevronRight size={16} />
+                </button>
+              )}
+            </div>
           </div>
 
 
@@ -1165,7 +1849,77 @@ function App({ user }) {
         </section>
 
 
-        <section className="workspace">
+        {/* =====================================================
+            QUICK APP NAVIGATION
+            ===================================================== */}
+
+        <section className="sage-home-tabs">
+          <button
+            type="button"
+            className="active"
+            onClick={() =>
+              navigateTo("HOME")
+            }
+          >
+            <Home size={16} />
+            HOME
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              result
+                ? navigateTo("ANALYSIS")
+                : document
+                    .getElementById(
+                      "signal-upload"
+                    )
+                    ?.scrollIntoView({
+                      behavior: "smooth",
+                    })
+            }
+          >
+            <LayoutDashboard size={16} />
+            ANALYSIS
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              navigateTo("HISTORY")
+            }
+          >
+            <History size={16} />
+            HISTORY
+
+            {history.length > 0 && (
+              <span>
+                {history.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            disabled={!result}
+            onClick={() =>
+              navigateTo("WORKSTATION")
+            }
+          >
+            <Monitor size={16} />
+            WORKSTATION
+          </button>
+        </section>
+
+
+        {/* =====================================================
+            UPLOAD / ANALYSIS WORKSPACE
+            ===================================================== */}
+
+        <section
+          className="workspace"
+          id="signal-upload"
+        >
           <div className="section-heading">
             <div>
               <div className="eyebrow">
@@ -1176,6 +1930,12 @@ function App({ user }) {
               <h2>
                 Analyze an RF recording
               </h2>
+
+              <p className="section-heading-description">
+                Process IQ or WAV recordings
+                through the authenticated
+                SAGE-RF DSP pipeline.
+              </p>
             </div>
 
             <div className="engine-pill">
@@ -1186,33 +1946,12 @@ function App({ user }) {
 
 
           <div className="upload-panel">
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".iq,.wav"
-              hidden
-              onChange={(event) => {
-                setFile(
-                  event.target.files?.[0] ||
-                    null
-                );
-
-                setError("");
-                setResult(null);
-              }}
-            />
-
-
             <button
               type="button"
               className={`drop-zone ${
-                file
-                  ? "selected"
-                  : ""
+                file ? "selected" : ""
               }`}
-              onClick={() =>
-                fileInput.current?.click()
-              }
+              onClick={openFilePicker}
             >
               <div className="upload-icon">
                 {file ? (
@@ -1222,13 +1961,11 @@ function App({ user }) {
                 )}
               </div>
 
-
               <div className="upload-title">
                 {file
                   ? file.name
                   : "Drop an RF recording here"}
               </div>
-
 
               <div className="upload-description">
                 {file
@@ -1236,12 +1973,9 @@ function App({ user }) {
                       file.size /
                       1024 /
                       1024
-                    ).toFixed(
-                      2
-                    )} MB · Ready for analysis`
+                    ).toFixed(2)} MB · Ready for analysis`
                   : "or click to browse · .IQ and .WAV supported"}
               </div>
-
 
               <div className="upload-line">
                 <span />
@@ -1258,20 +1992,15 @@ function App({ user }) {
 
                   <input
                     type="number"
-                    value={
-                      sampleRate
-                    }
-                    onChange={(
-                      event
-                    ) =>
+                    min="1"
+                    value={sampleRate}
+                    onChange={(event) =>
                       setSampleRate(
-                        event.target
-                          .value
+                        event.target.value
                       )
                     }
                   />
                 </label>
-
 
                 <div className="format-info">
                   <span>
@@ -1290,13 +2019,8 @@ function App({ user }) {
               <button
                 type="button"
                 className="primary-button"
-                disabled={
-                  !file ||
-                  loading
-                }
-                onClick={
-                  analyzeSignal
-                }
+                disabled={!file || loading}
+                onClick={analyzeSignal}
               >
                 {loading ? (
                   <>
@@ -1316,18 +2040,23 @@ function App({ user }) {
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={() => {
-                    setFile(null);
-                    setResult(null);
-                    setError("");
-
-                    if (fileInput.current) {
-                      fileInput.current.value =
-                        "";
-                    }
-                  }}
+                  onClick={clearSelectedFile}
                 >
                   CLEAR
+                </button>
+              )}
+
+
+              {result && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() =>
+                    navigateTo("WORKSTATION")
+                  }
+                >
+                  <Monitor size={15} />
+                  OPEN WORKSTATION
                 </button>
               )}
             </div>
@@ -1348,194 +2077,9 @@ function App({ user }) {
         </section>
 
 
-        {/*
-         * ANALYSIS HISTORY
-         *
-         * This is intentionally outside the
-         * current result section so the user's
-         * previous analyses remain visible
-         * after a new login.
-         */}
-        <section className="results-section history-section">
-          <div className="section-heading">
-            <div>
-              <div className="eyebrow">
-                <span />
-                FIREBASE ARCHIVE
-              </div>
-
-              <h2>
-                Analysis history
-              </h2>
-            </div>
-
-            <div className="engine-pill">
-              <Database size={15} />
-              {user
-                ? "USER HISTORY"
-                : "AUTHENTICATION REQUIRED"}
-            </div>
-          </div>
-
-
-          <div className="glass-panel">
-            {historyLoading ? (
-              <div className="empty-state">
-                <RefreshCw
-                  size={18}
-                  className="spin"
-                />
-
-                <span>
-                  Loading analysis history...
-                </span>
-              </div>
-            ) : historyError ? (
-              <div className="error-box">
-                <strong>
-                  History error
-                </strong>
-
-                <span>
-                  {historyError}
-                </span>
-              </div>
-            ) : history.length === 0 ? (
-              <div className="empty-state">
-                <Clock3 size={20} />
-
-                <span>
-                  No saved analyses yet.
-                </span>
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>
-                        SIGNAL
-                      </th>
-                      <th>
-                        FORMAT
-                      </th>
-                      <th>
-                        SAMPLE RATE
-                      </th>
-                      <th>
-                        MODULATION
-                      </th>
-                      <th>
-                        PEAK
-                      </th>
-                      <th>
-                        SNR
-                      </th>
-                      <th>
-                        DETECTIONS
-                      </th>
-                      <th>
-                        SAVED
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {history.map(
-                      (
-                        record,
-                        index
-                      ) => (
-                        <tr
-                          key={
-                            record.id ||
-                            `${record.filename}-${index}`
-                          }
-                        >
-                          <td>
-                            <span className="row-index">
-                              {String(
-                                index + 1
-                              ).padStart(
-                                2,
-                                "0"
-                              )}
-                            </span>
-                          </td>
-
-                          <td>
-                            <strong>
-                              {record.filename ||
-                                "Untitled signal"}
-                            </strong>
-                          </td>
-
-                          <td>
-                            {record.metadata
-                              ?.sourceFormat ||
-                              record.fileType ||
-                              "—"}
-                          </td>
-
-                          <td>
-                            {record.metadata
-                              ?.sampleRate !=
-                            null
-                              ? `${Number(
-                                  record.metadata
-                                    .sampleRate
-                                ).toLocaleString()} Hz`
-                              : "—"}
-                          </td>
-
-                          <td>
-                            <span className="modulation-badge">
-                              {getHistoryModulation(
-                                record
-                              )}
-                            </span>
-                          </td>
-
-                          <td>
-                            {formatHz(
-                              record.spectrum
-                                ?.peakFrequency
-                            )}
-                          </td>
-
-                          <td className="positive">
-                            {record.spectrum
-                              ?.snr != null
-                              ? `${Number(
-                                  record.spectrum
-                                    .snr
-                                ).toFixed(
-                                  1
-                                )} dB`
-                              : "—"}
-                          </td>
-
-                          <td>
-                            {record.detectionCount ??
-                              0}
-                          </td>
-
-                          <td>
-                            {formatHistoryDate(
-                              record.uploadedAt
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </section>
-
+        {/* =====================================================
+            RESULTS
+            ===================================================== */}
 
         {result && (
           <section className="results-section">
@@ -1549,6 +2093,12 @@ function App({ user }) {
                 <h2>
                   Signal intelligence
                 </h2>
+
+                <p className="section-heading-description">
+                  Analysis completed successfully
+                  and stored in your personal
+                  signal archive.
+                </p>
               </div>
 
 
@@ -1561,14 +2111,24 @@ function App({ user }) {
 
                 <button
                   type="button"
-                  className="workspace-launch-button"
+                  className="secondary-button"
                   onClick={() =>
-                    setWorkspaceOpen(
-                      true
-                    )
+                    navigateTo("HISTORY")
                   }
                 >
-                  <Sparkles size={15} />
+                  <History size={15} />
+                  HISTORY
+                </button>
+
+
+                <button
+                  type="button"
+                  className="workspace-launch-button"
+                  onClick={() =>
+                    navigateTo("WORKSTATION")
+                  }
+                >
+                  <Monitor size={15} />
                   OPEN WORKSTATION
                 </button>
               </div>
@@ -1593,9 +2153,7 @@ function App({ user }) {
                   result.metadata
                     ?.duration_seconds ||
                     0
-                ).toFixed(
-                  3
-                )} s`}
+                ).toFixed(3)} s`}
               />
 
               <StatCard
@@ -1646,9 +2204,7 @@ function App({ user }) {
                     height="100%"
                   >
                     <AreaChart
-                      data={
-                        spectrumData
-                      }
+                      data={spectrumData}
                     >
                       <defs>
                         <linearGradient
@@ -1661,17 +2217,13 @@ function App({ user }) {
                           <stop
                             offset="0%"
                             stopColor="#22d3ee"
-                            stopOpacity={
-                              0.45
-                            }
+                            stopOpacity={0.45}
                           />
 
                           <stop
                             offset="100%"
                             stopColor="#22d3ee"
-                            stopOpacity={
-                              0
-                            }
+                            stopOpacity={0}
                           />
                         </linearGradient>
                       </defs>
@@ -1679,17 +2231,13 @@ function App({ user }) {
 
                       <CartesianGrid
                         stroke="rgba(148,163,184,0.09)"
-                        vertical={
-                          false
-                        }
+                        vertical={false}
                       />
 
 
                       <XAxis
                         dataKey="frequency"
-                        tickFormatter={
-                          formatHz
-                        }
+                        tickFormatter={formatHz}
                         stroke="#64748b"
                         tick={{
                           fontSize: 10,
@@ -1699,33 +2247,20 @@ function App({ user }) {
 
                       <YAxis
                         hide
-                        domain={[
-                          0,
-                          1.1,
-                        ]}
+                        domain={[0, 1.1]}
                       />
 
 
                       <Tooltip
-                        formatter={(
-                          value
-                        ) =>
+                        formatter={(value) =>
                           `${(
-                            Number(
-                              value
-                            ) *
+                            Number(value) *
                             100
-                          ).toFixed(
-                            1
-                          )}%`
+                          ).toFixed(1)}%`
                         }
-                        labelFormatter={(
-                          value
-                        ) =>
+                        labelFormatter={(value) =>
                           formatHz(
-                            Number(
-                              value
-                            )
+                            Number(value)
                           )
                         }
                         contentStyle={{
@@ -1733,8 +2268,7 @@ function App({ user }) {
                             "#07101d",
                           border:
                             "1px solid rgba(148,163,184,0.18)",
-                          borderRadius:
-                            12,
+                          borderRadius: 12,
                         }}
                       />
 
@@ -1775,12 +2309,8 @@ function App({ user }) {
                       {result.spectrum
                         ?.snr_db != null
                         ? `${Number(
-                            result
-                              .spectrum
-                              .snr_db
-                          ).toFixed(
-                            1
-                          )} dB`
+                            result.spectrum.snr_db
+                          ).toFixed(1)} dB`
                         : "—"}
                     </strong>
                   </div>
@@ -1829,9 +2359,7 @@ function App({ user }) {
                         </span>
 
                         <strong>
-                          {
-                            modulation.modulation
-                          }
+                          {modulation.modulation}
                         </strong>
                       </div>
 
@@ -1841,9 +2369,7 @@ function App({ user }) {
                             modulation.confidence
                           ) *
                           100
-                        ).toFixed(
-                          1
-                        )}
+                        ).toFixed(1)}
 
                         <small>
                           %
@@ -1855,12 +2381,15 @@ function App({ user }) {
                     <div className="confidence-track">
                       <span
                         style={{
-                          width: `${
-                            Number(
-                              modulation.confidence
-                            ) *
-                            100
-                          }%`,
+                          width: `${Math.min(
+                            100,
+                            Math.max(
+                              0,
+                              Number(
+                                modulation.confidence
+                              ) * 100
+                            )
+                          )}%`,
                         }}
                       />
                     </div>
@@ -1878,9 +2407,7 @@ function App({ user }) {
                               .evidence
                               ?.psk_score ||
                               0
-                          ).toFixed(
-                            3
-                          )}
+                          ).toFixed(3)}
                         </strong>
                       </div>
 
@@ -1896,9 +2423,7 @@ function App({ user }) {
                               .evidence
                               ?.fsk_score ||
                               0
-                          ).toFixed(
-                            3
-                          )}
+                          ).toFixed(3)}
                         </strong>
                       </div>
 
@@ -1914,9 +2439,7 @@ function App({ user }) {
                               .evidence
                               ?.qam_score ||
                               0
-                          ).toFixed(
-                            3
-                          )}
+                          ).toFixed(3)}
                         </strong>
                       </div>
 
@@ -1932,16 +2455,15 @@ function App({ user }) {
                               .evidence
                               ?.amplitude_cv ||
                               0
-                          ).toFixed(
-                            4
-                          )}
+                          ).toFixed(4)}
                         </strong>
                       </div>
                     </div>
                   </>
                 ) : (
                   <div className="empty-state">
-                    No modulation classification available.
+                    No modulation classification
+                    available.
                   </div>
                 )}
               </div>
@@ -2020,8 +2542,7 @@ function App({ user }) {
                           <td>
                             <span className="row-index">
                               {String(
-                                index +
-                                  1
+                                index + 1
                               ).padStart(
                                 2,
                                 "0"
@@ -2053,10 +2574,9 @@ function App({ user }) {
 
                           <td className="positive">
                             {Number(
-                              candidate.snr_db
-                            ).toFixed(
-                              1
-                            )}{" "}
+                              candidate.snr_db ||
+                                0
+                            ).toFixed(1)}{" "}
                             dB
                           </td>
 
@@ -2065,12 +2585,11 @@ function App({ user }) {
                             <span className="confidence-badge">
                               {(
                                 Number(
-                                  candidate.confidence
+                                  candidate.confidence ||
+                                    0
                                 ) *
                                 100
-                              ).toFixed(
-                                1
-                              )}
+                              ).toFixed(1)}
                               %
                             </span>
                           </td>
@@ -2087,12 +2606,12 @@ function App({ user }) {
                     )}
 
 
-                    {detections.length ===
-                      0 && (
+                    {detections.length === 0 && (
                       <tr>
                         <td colSpan="7">
                           <div className="empty-state">
-                            No RF candidates detected.
+                            No RF candidates
+                            detected.
                           </div>
                         </td>
                       </tr>
@@ -2154,12 +2673,9 @@ function App({ user }) {
                       ?.mean_power !=
                     null
                       ? Number(
-                          result
-                            .metadata
+                          result.metadata
                             .mean_power
-                        ).toFixed(
-                          6
-                        )
+                        ).toFixed(6)
                       : "—"}
                   </strong>
                 </div>
@@ -2192,17 +2708,28 @@ function App({ user }) {
           RF ANALYSIS ENGINE v1.0
         </div>
       </footer>
+
+
+      {/* ========================================================
+          SINGLE GLOBAL FILE INPUT
+          ======================================================== */}
+
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".iq,.wav"
+        hidden
+        onChange={handleFileSelect}
+      />
     </div>
   );
 }
 
 
-/*
- * FIREBASE AUTHENTICATION WRAPPER
- *
- * AuthGate supplies the currently authenticated
- * Firebase user to App.
- */
+/* ============================================================
+   FIREBASE AUTH WRAPPER
+   ============================================================ */
+
 function AppWithAuth() {
   return (
     <AuthGate>
