@@ -598,9 +598,9 @@ function HistoryPage({
                     </span>
 
                     <strong>
-                      {metadata.sample_rate != null
+                      {metadata.sampleRate != null
                         ? `${Number(
-                            metadata.sample_rate
+                            metadata.sampleRate
                           ).toLocaleString()} Hz`
                         : "—"}
                     </strong>
@@ -612,9 +612,9 @@ function HistoryPage({
                     </span>
 
                     <strong>
-                      {metadata.duration_seconds != null
+                      {metadata.duration != null
                         ? `${Number(
-                            metadata.duration_seconds
+                            metadata.duration
                           ).toFixed(3)} s`
                         : "—"}
                     </strong>
@@ -639,9 +639,9 @@ function HistoryPage({
                     </span>
 
                     <strong>
-                      {spectrum.snr_db != null
+                      {spectrum.snr != null
                         ? `${Number(
-                            spectrum.snr_db
+                            spectrum.snr
                           ).toFixed(1)} dB`
                         : "—"}
                     </strong>
@@ -1254,23 +1254,20 @@ function App({ user }) {
       return;
     }
 
-    /*
-     * Historical records contain the
-     * analysis summary, but the original
-     * uploaded binary is not stored.
-     *
-     * Therefore we cannot safely reopen
-     * the old recording inside the live
-     * workstation.
-     *
-     * We simply keep the user on History
-     * instead of displaying a fake error.
-     */
+    if (!record.result) {
+      console.error(
+        "SAGE-RF history record does not contain saved analysis result:",
+        record
+      );
 
-    setActivePage("HISTORY");
+      return;
+    }
+
+    setResult(record.result);
+    setActivePage("HOME");
 
     console.log(
-      "SAGE-RF historical analysis selected:",
+      "SAGE-RF historical analysis opened:",
       record.filename || "signal"
     );
   }
@@ -1380,6 +1377,7 @@ function App({ user }) {
 
       setResult(data);
       setActivePage("ANALYSIS");
+      
 
       /*
        * Save analysis to Firebase history.

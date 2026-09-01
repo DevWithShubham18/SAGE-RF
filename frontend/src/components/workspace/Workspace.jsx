@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { auth } from "../../firebase/firebase";
+
 import {
   Activity,
   BarChart3,
   ChevronRight,
   Clock3,
+  Cpu,
   Database,
   Download,
   FileAudio,
@@ -25,12 +35,17 @@ import {
   Upload,
   Volume2,
   VolumeX,
-  Zap,
+  Waves,
 } from "lucide-react";
 
 import SpectrumPanel from "../spectrum/SpectrumPanel";
 import WaterfallPanel from "../waterfall/WaterfallPanel";
 import MultiSignalTimeline from "../waveform/MultiSignalTimeline";
+
+
+/* ============================================================
+   WORKSPACE
+   ============================================================ */
 
 function Workspace({
   result = null,
@@ -44,10 +59,6 @@ function Workspace({
   onStop,
   onHome,
 }) {
-  /* =========================================================
-     STATE
-     ========================================================= */
-
   const [activeTool, setActiveTool] = useState("ANALYSIS");
   const [selectedSignal, setSelectedSignal] = useState(0);
 
@@ -62,18 +73,35 @@ function Workspace({
 
   const [showShortcuts, setShowShortcuts] = useState(false);
 
-  /* =========================================================
+  const localAudioRef = useRef(null);
+
+  /* ==========================================================
+     AUDIO
+     ========================================================== */
+
+  const getAudioElement = useCallback(() => {
+    return audioRef?.current || localAudioRef.current || null;
+  }, [audioRef]);
+
+  const audio = getAudioElement();
+
+  /* ==========================================================
      SAFE DATA
-     ========================================================= */
+     ========================================================== */
 
   const signals = useMemo(() => {
     const candidates = result?.detections?.candidates;
 
-    return Array.isArray(candidates) ? candidates : [];
+    return Array.isArray(candidates)
+      ? candidates
+      : [];
   }, [result]);
 
   const samples = useMemo(() => {
-    if (Array.isArray(waveformSamples) && waveformSamples.length > 0) {
+    if (
+      Array.isArray(waveformSamples) &&
+      waveformSamples.length
+    ) {
       return waveformSamples;
     }
 
@@ -85,459 +113,532 @@ function Workspace({
   }, [waveformSamples, result]);
 
   const duration = useMemo(() => {
-    const audioValue = Number(audioDuration);
+    const explicitDuration = Number(audioDuration);
 
-    if (Number.isFinite(audioValue) && audioValue > 0) {
-      return audioValue;
+    if (
+      Number.isFinite(explicitDuration) &&
+      explicitDuration > 0
+    ) {
+      return explicitDuration;
     }
 
-    const resultDuration = Number(
+    const metadataDuration = Number(
       result?.metadata?.duration_seconds
     );
 
     if (
-      Number.isFinite(resultDuration) &&
-      resultDuration > 0
+      Number.isFinite(metadataDuration) &&
+      metadataDuration > 0
     ) {
-      return resultDuration;
+      return metadataDuration;
+    }
+
+    const mediaDuration = Number(
+      audio?.duration
+    );
+
+    if (
+      Number.isFinite(mediaDuration) &&
+      mediaDuration > 0
+    ) {
+      return mediaDuration;
     }
 
     return 0;
-  }, [audioDuration, result]);
+  }, [
+    audioDuration,
+    result,
+    audio,
+  ]);
 
   const selectedCandidate =
     signals[selectedSignal] || null;
 
-  /* =========================================================
-     KEEP SELECTED SIGNAL VALID
-     ========================================================= */
+  /* ==========================================================
+     SAGE DSP
+     ========================================================== */
+
+  const sageDsp =
+    result?.dsp_engine || null;
+
+  const fourier =
+    sageDsp?.fourier || null;
+
+  const laplace =
+    sageDsp?.laplace || null;
+
+  const dspStatus =
+    sageDsp?.status || "not_run";
+
+  /* ==========================================================
+     KEEP SIGNAL SELECTION VALID
+     ========================================================== */
 
   useEffect(() => {
-    if (signals.length === 0) {
+    if (!signals.length) {
       setSelectedSignal(0);
       return;
     }
 
-    if (selectedSignal >= signals.length) {
+    if (
+      selectedSignal < 0 ||
+      selectedSignal >= signals.length
+    ) {
       setSelectedSignal(0);
     }
-  }, [signals.length, selectedSignal]);
+  }, [
+    signals.length,
+    selectedSignal,
+  ]);
 
-  /* =========================================================
+  /* ==========================================================
      WAVEFORM DATA
-     ========================================================= */
+     ========================================================== */
 
   const waveformPoints = useMemo(() => {
-    if (!samples.length) {
-      return [];
-    }
-
-    const pointCount = 220;
-
-    if (samples.length <= pointCount) {
-      const rawPoints = samples.map((value) =>
-        Math.abs(Number(value) || 0)
-      );
-
-      const maxValue = Math.max(
-        ...rawPoints,
-        1
-      );
-
-      return rawPoints.map(
-        (value) => value / maxValue
-      );
-    }
-
-    const points = [];
-    const samplesPerPoint =
-      samples.length / pointCount;
-
-    for (
-      let index = 0;
-      index < pointCount;
-      index += 1
-    ) {
-      const start = Math.floor(
-        index * samplesPerPoint
-      );
-
-      const end = Math.min(
-        samples.length,
-        Math.max(
-          start + 1,
-          Math.floor(
-            (index + 1) * samplesPerPoint
-          )
-        )
-      );
-
-      let peak = 0;
-
-      for (
-        let sampleIndex = start;
-        sampleIndex < end;
-        sampleIndex += 1
-      ) {
-        const value = Math.abs(
-          Number(samples[sampleIndex]) || 0
-        );
-
-        peak = Math.max(peak, value);
-      }
-
-      points.push(peak);
-    }
-
-    const maxPeak = Math.max(
-      ...points,
-      1
-    );
-
-    return points.map(
-      (value) => value / maxPeak
+    return buildWaveformPoints(
+      samples,
+      420
     );
   }, [samples]);
 
-  /* =========================================================
+  /* ==========================================================
      AUDIO EVENTS
-     ========================================================= */
+     ========================================================== */
 
   useEffect(() => {
-    const audio = audioRef?.current;
+    const element = getAudioElement();
 
-    if (!audio) {
+    if (!element) {
       return undefined;
     }
 
-    const updateTime = () => {
-      const time = Number(audio.currentTime);
+    const update = () => {
+      const value =
+        Number(element.currentTime);
 
       setCurrentTime(
-        Number.isFinite(time) && time >= 0
-          ? time
+        Number.isFinite(value)
+          ? Math.max(0, value)
           : 0
       );
     };
 
-    const handleLoadedMetadata = () => {
-      updateTime();
+    const reset = () => {
+      update();
     };
 
-    const handleDurationChange = () => {
-      updateTime();
-    };
-
-    const handleEnded = () => {
-      if (!audio.loop) {
-        setCurrentTime(0);
-      }
-    };
-
-    audio.addEventListener(
+    element.addEventListener(
       "timeupdate",
-      updateTime
+      update
     );
 
-    audio.addEventListener(
+    element.addEventListener(
       "loadedmetadata",
-      handleLoadedMetadata
+      update
     );
 
-    audio.addEventListener(
+    element.addEventListener(
       "durationchange",
-      handleDurationChange
+      update
     );
 
-    audio.addEventListener(
+    element.addEventListener(
+      "seeking",
+      update
+    );
+
+    element.addEventListener(
+      "seeked",
+      update
+    );
+
+    element.addEventListener(
       "ended",
-      handleEnded
+      reset
     );
 
-    updateTime();
+    update();
 
     return () => {
-      audio.removeEventListener(
+      element.removeEventListener(
         "timeupdate",
-        updateTime
+        update
       );
 
-      audio.removeEventListener(
+      element.removeEventListener(
         "loadedmetadata",
-        handleLoadedMetadata
+        update
       );
 
-      audio.removeEventListener(
+      element.removeEventListener(
         "durationchange",
-        handleDurationChange
+        update
       );
 
-      audio.removeEventListener(
+      element.removeEventListener(
+        "seeking",
+        update
+      );
+
+      element.removeEventListener(
+        "seeked",
+        update
+      );
+
+      element.removeEventListener(
         "ended",
-        handleEnded
+        reset
       );
     };
-  }, [audioRef, audioUrl]);
+  }, [
+    getAudioElement,
+    audioUrl,
+  ]);
 
-  /* =========================================================
+  /* ==========================================================
      AUDIO SETTINGS
-     ========================================================= */
+     ========================================================== */
 
   useEffect(() => {
-    const audio = audioRef?.current;
+    const element = getAudioElement();
 
-    if (!audio) {
+    if (!element) {
       return;
     }
 
-    audio.volume = muted
-      ? 0
-      : Math.min(1, Math.max(0, volume));
+    try {
+      element.volume = muted
+        ? 0
+        : Math.min(
+            1,
+            Math.max(
+              0,
+              Number(volume) || 0
+            )
+          );
 
-    audio.playbackRate = playbackRate;
-    audio.loop = loop;
+      element.muted = Boolean(muted);
+
+      element.playbackRate =
+        Number(playbackRate) || 1;
+
+      element.loop = Boolean(loop);
+    } catch {
+      // Browser media can reject property updates
+      // while the media element is transitioning.
+    }
   }, [
-    audioRef,
+    getAudioElement,
     volume,
     muted,
     playbackRate,
     loop,
   ]);
 
-  /* =========================================================
-     HELPERS
-     ========================================================= */
+  /* ==========================================================
+     FORMATTING
+     ========================================================== */
 
-  function formatTime(seconds) {
-    const numericValue = Number(seconds);
+  function formatTime(value) {
+    const n = Number(value);
 
     if (
-      !Number.isFinite(numericValue) ||
-      numericValue < 0
+      !Number.isFinite(n) ||
+      n < 0
     ) {
       return "00:00.000";
     }
 
-    const value = Math.max(
-      0,
-      numericValue
-    );
+    const minutes =
+      Math.floor(n / 60);
 
-    const minutes = Math.floor(
-      value / 60
-    );
+    const seconds =
+      Math.floor(n % 60);
 
-    const secs = Math.floor(
-      value % 60
-    );
+    const millis =
+      Math.floor(
+        (n % 1) * 1000
+      );
 
-    const millis = Math.floor(
-      (value % 1) * 1000
+    return (
+      `${String(minutes).padStart(2, "0")}:` +
+      `${String(seconds).padStart(2, "0")}.` +
+      `${String(millis).padStart(3, "0")}`
     );
-
-    return `${String(minutes).padStart(
-      2,
-      "0"
-    )}:${String(secs).padStart(
-      2,
-      "0"
-    )}.${String(millis).padStart(
-      3,
-      "0"
-    )}`;
   }
 
-  function formatShortTime(seconds) {
-    const numericValue = Number(seconds);
+  function formatShortTime(value) {
+    const n = Number(value);
 
     if (
-      !Number.isFinite(numericValue) ||
-      numericValue < 0
+      !Number.isFinite(n) ||
+      n < 0
     ) {
       return "00:00";
     }
 
-    const minutes = Math.floor(
-      numericValue / 60
+    return (
+      `${String(
+        Math.floor(n / 60)
+      ).padStart(2, "0")}:` +
+      `${String(
+        Math.floor(n % 60)
+      ).padStart(2, "0")}`
     );
-
-    const secs = Math.floor(
-      numericValue % 60
-    );
-
-    return `${String(minutes).padStart(
-      2,
-      "0"
-    )}:${String(secs).padStart(
-      2,
-      "0"
-    )}`;
-  }
-
-  function formatHz(value) {
-    const numericValue = Number(value);
-
-    if (!Number.isFinite(numericValue)) {
-      return "—";
-    }
-
-    const abs = Math.abs(numericValue);
-
-    if (abs >= 1_000_000) {
-      return `${(
-        numericValue / 1_000_000
-      ).toFixed(2)} MHz`;
-    }
-
-    if (abs >= 1_000) {
-      return `${(
-        numericValue / 1_000
-      ).toFixed(2)} kHz`;
-    }
-
-    return `${numericValue.toFixed(1)} Hz`;
   }
 
   function formatNumber(value) {
-    const numericValue = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(numericValue)) {
+    if (!Number.isFinite(n)) {
       return "—";
     }
 
-    return numericValue.toLocaleString();
+    return n.toLocaleString();
+  }
+
+  function formatHz(value) {
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) {
+      return "—";
+    }
+
+    const abs = Math.abs(n);
+
+    if (abs >= 1000000) {
+      return `${(
+        n / 1000000
+      ).toFixed(2)} MHz`;
+    }
+
+    if (abs >= 1000) {
+      return `${(
+        n / 1000
+      ).toFixed(2)} kHz`;
+    }
+
+    return `${n.toFixed(1)} Hz`;
+  }
+
+  function formatDb(value) {
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) {
+      return "—";
+    }
+
+    return `${n.toFixed(2)} dB`;
   }
 
   function formatConfidence(value) {
-    const numericValue = Number(value);
+    const n = Number(value);
 
-    if (!Number.isFinite(numericValue)) {
+    if (!Number.isFinite(n)) {
       return "—";
     }
 
     const percentage =
-      numericValue <= 1
-        ? numericValue * 100
-        : numericValue;
+      n <= 1
+        ? n * 100
+        : n;
 
     return `${Math.max(
       0,
-      Math.min(100, percentage)
+      Math.min(
+        100,
+        percentage
+      )
     ).toFixed(1)}%`;
   }
 
-  /* =========================================================
+  function formatSigma(value) {
+    const n = Number(value);
+
+    return Number.isFinite(n)
+      ? n.toFixed(2)
+      : "—";
+  }
+
+  function formatScore(value) {
+    const n = Number(value);
+
+    return Number.isFinite(n)
+      ? n.toFixed(3)
+      : "—";
+  }
+
+  /* ==========================================================
      PLAYBACK
-     ========================================================= */
+     ========================================================== */
 
-  function seekBy(amount) {
-    const audio = audioRef?.current;
+  const seekTo = useCallback(
+    (value) => {
+      const element =
+        getAudioElement();
 
-    if (!audio) {
-      return;
-    }
-
-    const audioDurationValue =
-      Number(audio.duration);
-
-    const maxDuration =
-      Number.isFinite(
-        audioDurationValue
-      ) && audioDurationValue > 0
-        ? audioDurationValue
-        : duration;
-
-    const current =
-      Number(audio.currentTime) || 0;
-
-    const next = Math.max(
-      0,
-      Math.min(
-        maxDuration || 0,
-        current + amount
-      )
-    );
-
-    try {
-      audio.currentTime = next;
-    } catch {
-      // Browser may reject seeking before metadata loads.
-    }
-
-    setCurrentTime(next);
-  }
-
-  function seekTo(value) {
-    const audio = audioRef?.current;
-
-    if (!audio) {
-      return;
-    }
-
-    const requested = Number(value);
-
-    if (!Number.isFinite(requested)) {
-      return;
-    }
-
-    const audioDurationValue =
-      Number(audio.duration);
-
-    const maxDuration =
-      Number.isFinite(
-        audioDurationValue
-      ) && audioDurationValue > 0
-        ? audioDurationValue
-        : duration;
-
-    const next = Math.max(
-      0,
-      Math.min(
-        requested,
-        maxDuration || requested
-      )
-    );
-
-    try {
-      audio.currentTime = next;
-    } catch {
-      // Ignore browser seek errors.
-    }
-
-    setCurrentTime(next);
-  }
-
-  function stopPlayback() {
-    const audio = audioRef?.current;
-
-    if (audio) {
-      try {
-        audio.pause();
-        audio.currentTime = 0;
-      } catch {
-        // Ignore media reset errors.
+      if (!element) {
+        return;
       }
-    }
 
-    setCurrentTime(0);
+      const requested =
+        Number(value);
 
-    if (typeof onStop === "function") {
-      onStop();
-    }
-  }
+      if (
+        !Number.isFinite(requested)
+      ) {
+        return;
+      }
 
-  function handlePlayPause() {
-    if (typeof onPlayPause === "function") {
-      onPlayPause();
-    }
-  }
+      const mediaDuration =
+        Number(element.duration);
 
-  /* =========================================================
+      const max =
+        Number.isFinite(
+          mediaDuration
+        ) &&
+        mediaDuration > 0
+          ? mediaDuration
+          : duration;
+
+      const next =
+        max > 0
+          ? Math.max(
+              0,
+              Math.min(
+                requested,
+                max
+              )
+            )
+          : Math.max(
+              0,
+              requested
+            );
+
+      try {
+        element.currentTime =
+          next;
+      } catch {
+        // Ignore seek errors before metadata is ready.
+      }
+
+      setCurrentTime(next);
+    },
+    [
+      getAudioElement,
+      duration,
+    ]
+  );
+
+  const seekBy = useCallback(
+    (seconds) => {
+      seekTo(
+        currentTime +
+          Number(seconds)
+      );
+    },
+    [
+      currentTime,
+      seekTo,
+    ]
+  );
+
+  const stopPlayback = useCallback(
+    () => {
+      const element =
+        getAudioElement();
+
+      if (element) {
+        try {
+          element.pause();
+          element.currentTime = 0;
+        } catch {
+          // Ignore browser media reset errors.
+        }
+      }
+
+      setCurrentTime(0);
+
+      if (
+        typeof onStop ===
+        "function"
+      ) {
+        onStop();
+      }
+    },
+    [
+      getAudioElement,
+      onStop,
+    ]
+  );
+
+  /*
+   * Important:
+   *
+   * The workspace now controls the actual <audio> element.
+   * If a parent onPlayPause handler also exists, we call it
+   * only when there is no locally controllable media element.
+   *
+   * This prevents the common "play -> immediately pause"
+   * double-toggle bug.
+   */
+  const playPause = useCallback(
+    async () => {
+      const element =
+        getAudioElement();
+
+      if (!element) {
+        if (
+          typeof onPlayPause ===
+          "function"
+        ) {
+          onPlayPause();
+        }
+
+        return;
+      }
+
+      try {
+        if (element.paused) {
+          await element.play();
+        } else {
+          element.pause();
+        }
+      } catch (error) {
+        console.warn(
+          "SAGE-RF playback error:",
+          error
+        );
+
+        /*
+         * Browser autoplay policy may block playback.
+         * Keep compatibility with the existing parent
+         * playback handler as a fallback.
+         */
+        if (
+          typeof onPlayPause ===
+          "function"
+        ) {
+          onPlayPause();
+        }
+      }
+    },
+    [
+      getAudioElement,
+      onPlayPause,
+    ]
+  );
+
+  /* ==========================================================
      HOME
-     ========================================================= */
+     ========================================================== */
 
   function goHome() {
-    if (typeof onHome === "function") {
+    if (
+      typeof onHome ===
+      "function"
+    ) {
       onHome();
       return;
     }
@@ -545,73 +646,97 @@ function Workspace({
     window.location.reload();
   }
 
-  /* =========================================================
+  /* ==========================================================
      EXPORT
-     ========================================================= */
+     ========================================================== */
 
   function exportAnalysis() {
+    if (!result) {
+      return;
+    }
+
     try {
       const payload = {
-        application: "SAGE-RF",
-        version: "1.0",
-        exported_at: new Date().toISOString(),
+        application:
+          "SAGE-RF",
+
+        exported_at:
+          new Date().toISOString(),
 
         filename:
-          result?.filename ||
+          result.filename ||
           "sage-rf-analysis",
 
         metadata:
-          result?.metadata || {},
+          result.metadata || {},
 
         spectrum:
-          result?.spectrum || {},
+          result.spectrum || {},
+
+        waterfall:
+          result.waterfall || {},
 
         modulation:
-          result?.modulation || {},
+          result.modulation || null,
 
         detections:
-          result?.detections || {},
+          result.detections || {},
+
+        dsp_engine:
+          result.dsp_engine || {},
 
         diagnostics:
-          result?.diagnostics || {},
+          result.diagnostics || {},
       };
 
-      const json = JSON.stringify(
-        payload,
-        null,
-        2
-      );
-
-      const blob = new Blob(
-        [json],
-        {
-          type: "application/json",
-        }
-      );
+      const blob =
+        new Blob(
+          [
+            JSON.stringify(
+              payload,
+              null,
+              2
+            ),
+          ],
+          {
+            type:
+              "application/json",
+          }
+        );
 
       const url =
-        URL.createObjectURL(blob);
+        URL.createObjectURL(
+          blob
+        );
 
       const anchor =
-        document.createElement("a");
+        document.createElement(
+          "a"
+        );
 
       anchor.href = url;
 
       anchor.download =
         `${sanitizeFilename(
-          result?.filename ||
+          result.filename ||
             "sage-rf-analysis"
         )}-analysis.json`;
 
-      document.body.appendChild(anchor);
+      document.body.appendChild(
+        anchor
+      );
 
       anchor.click();
 
-      document.body.removeChild(anchor);
+      anchor.remove();
 
-      window.setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 100);
+      window.setTimeout(
+        () =>
+          URL.revokeObjectURL(
+            url
+          ),
+        250
+      );
     } catch (error) {
       console.error(
         "SAGE-RF export failed:",
@@ -620,81 +745,209 @@ function Workspace({
     }
   }
 
-  /* =========================================================
-     KEYBOARD SHORTCUTS
-     ========================================================= */
+  /* ==========================================================
+     PDF REPORT
+     ========================================================== */
 
-  useEffect(() => {
-    const handleKeyboard = (event) => {
-      const target = event.target;
+  async function openReport() {
+    const id = result?.history_id;
 
-      const isTyping =
-        target instanceof
-          HTMLInputElement ||
-        target instanceof
-          HTMLSelectElement ||
-        target instanceof
-          HTMLTextAreaElement ||
-        target?.isContentEditable;
+    if (!id) {
+      console.warn(
+        "SAGE-RF PDF report: no history ID available."
+      );
+      return;
+    }
 
-      if (isTyping) {
-        return;
-      }
+    const currentUser = auth.currentUser;
 
-      if (
-        event.code === "Space"
-      ) {
-        event.preventDefault();
-        handlePlayPause();
-        return;
-      }
+    if (!currentUser) {
+      console.error(
+        "SAGE-RF PDF report: no authenticated Firebase user."
+      );
+      return;
+    }
 
-      if (
-        event.code === "ArrowLeft"
-      ) {
-        event.preventDefault();
-        seekBy(-5);
-        return;
-      }
+    /*
+     * Open a blank tab immediately from the click event.
+     * This prevents Chrome/Safari popup blocking while we
+     * asynchronously obtain the Firebase ID token and PDF.
+     */
+    const reportWindow = window.open(
+      "",
+      "_blank"
+    );
 
-      if (
-        event.code === "ArrowRight"
-      ) {
-        event.preventDefault();
-        seekBy(5);
-        return;
-      }
+    try {
+      /*
+       * Get the current Firebase ID token.
+       * Firebase refreshes it automatically when necessary.
+       */
+      const idToken =
+        await currentUser.getIdToken();
 
-      if (event.code === "Home") {
-        event.preventDefault();
-        seekTo(0);
-        return;
-      }
+      const reportUrl =
+        `/api/report/${encodeURIComponent(
+          id
+        )}`;
 
-      if (event.code === "End") {
-        event.preventDefault();
+      /*
+       * IMPORTANT:
+       *
+       * The old implementation used window.open(reportUrl),
+       * which sent NO Authorization header.
+       *
+       * The report endpoint requires:
+       * Authorization: Bearer <Firebase ID token>
+       */
+      const response =
+        await fetch(reportUrl, {
+          method: "GET",
+          headers: {
+            Authorization:
+              `Bearer ${idToken}`,
+            Accept: "application/pdf",
+          },
+        });
 
-        const audio =
-          audioRef?.current;
+      if (!response.ok) {
+        let detail =
+          `PDF report request failed (${response.status}).`;
 
-        const audioDurationValue =
-          Number(audio?.duration);
+        try {
+          const errorData =
+            await response.json();
 
-        if (
-          Number.isFinite(
-            audioDurationValue
-          ) &&
-          audioDurationValue > 0
-        ) {
-          seekTo(audioDurationValue);
-        } else if (duration > 0) {
-          seekTo(duration);
+          if (errorData?.detail) {
+            detail = errorData.detail;
+          }
+        } catch {
+          /* Response was not JSON. */
         }
 
+        throw new Error(detail);
+      }
+
+      /*
+       * The backend returns the generated ReportLab PDF as
+       * binary data.
+       */
+      const blob =
+        await response.blob();
+
+      if (!blob || blob.size === 0) {
+        throw new Error(
+          "The PDF report was empty."
+        );
+      }
+
+      /*
+       * Create a local browser URL for the authenticated PDF.
+       */
+      const pdfUrl =
+        URL.createObjectURL(blob);
+
+      if (reportWindow) {
+        reportWindow.location.href =
+          pdfUrl;
+      } else {
+        /* Popup was blocked: use the current tab. */
+        window.location.href =
+          pdfUrl;
+      }
+
+      /*
+       * Give the browser time to consume the blob URL before
+       * releasing it.
+       */
+      window.setTimeout(() => {
+        URL.revokeObjectURL(pdfUrl);
+      }, 60_000);
+
+      console.log(
+        "SAGE-RF PDF report generated:",
+        {
+          historyId: id,
+          sizeBytes: blob.size,
+        }
+      );
+    } catch (error) {
+      console.error(
+        "SAGE-RF PDF report failed:",
+        error
+      );
+
+      /* Don't leave a blank tab behind if generation failed. */
+      if (reportWindow) {
+        try {
+          reportWindow.close();
+        } catch {
+          // Ignore browser restrictions.
+        }
+      }
+    }
+  }
+
+  /* ==========================================================
+     KEYBOARD SHORTCUTS
+     ========================================================== */
+
+  useEffect(() => {
+    function handleKeyboard(
+      event
+    ) {
+      const target =
+        event.target;
+
+      const typing =
+        target instanceof
+          window.HTMLInputElement ||
+        target instanceof
+          window.HTMLSelectElement ||
+        target instanceof
+          window.HTMLTextAreaElement ||
+        target?.isContentEditable;
+
+      if (typing) {
         return;
       }
 
-      if (event.key === "?") {
+      if (
+        event.code ===
+        "Space"
+      ) {
+        event.preventDefault();
+
+        playPause();
+
+        return;
+      }
+
+      if (
+        event.code ===
+        "ArrowLeft"
+      ) {
+        event.preventDefault();
+
+        seekBy(-5);
+
+        return;
+      }
+
+      if (
+        event.code ===
+        "ArrowRight"
+      ) {
+        event.preventDefault();
+
+        seekBy(5);
+
+        return;
+      }
+
+      if (
+        event.key === "?"
+      ) {
         event.preventDefault();
 
         setShowShortcuts(
@@ -704,35 +957,23 @@ function Workspace({
         return;
       }
 
-      if (event.key === "1") {
-        setActiveTool("ANALYSIS");
-        return;
-      }
+      const map = {
+        1: "ANALYSIS",
+        2: "EDITOR",
+        3: "MIXER",
+        4: "SIGNAL LAB",
+        5: "FOURIER",
+        6: "LAPLACE",
+        7: "PROJECTS",
+        8: "SETTINGS",
+      };
 
-      if (event.key === "2") {
-        setActiveTool("EDITOR");
-        return;
+      if (map[event.key]) {
+        setActiveTool(
+          map[event.key]
+        );
       }
-
-      if (event.key === "3") {
-        setActiveTool("MIXER");
-        return;
-      }
-
-      if (event.key === "4") {
-        setActiveTool("SIGNAL LAB");
-        return;
-      }
-
-      if (event.key === "5") {
-        setActiveTool("PROJECTS");
-        return;
-      }
-
-      if (event.key === "6") {
-        setActiveTool("SETTINGS");
-      }
-    };
+    }
 
     window.addEventListener(
       "keydown",
@@ -746,20 +987,18 @@ function Workspace({
       );
     };
   }, [
-    onPlayPause,
-    audioRef,
-    duration,
+    playPause,
+    seekBy,
   ]);
 
-  /* =========================================================
-     TOOLS
-     ========================================================= */
+  /* ==========================================================
+     NAVIGATION
+     ========================================================== */
 
   const tools = [
     {
       id: "ANALYSIS",
       label: "Analysis",
-      short: "ANALYSIS",
       icon: BarChart3,
       description:
         "Spectrum, waterfall and signal intelligence",
@@ -767,7 +1006,6 @@ function Workspace({
     {
       id: "EDITOR",
       label: "Editor",
-      short: "EDITOR",
       icon: SlidersHorizontal,
       description:
         "Inspect and navigate the recording waveform",
@@ -775,7 +1013,6 @@ function Workspace({
     {
       id: "MIXER",
       label: "Mixer",
-      short: "MIXER",
       icon: Radio,
       description:
         "Monitor detected signal channels",
@@ -783,15 +1020,27 @@ function Workspace({
     {
       id: "SIGNAL LAB",
       label: "Signal Lab",
-      short: "SIGNAL LAB",
       icon: FlaskConical,
       description:
         "Inspect modulation and DSP evidence",
     },
     {
+      id: "FOURIER",
+      label: "Fourier",
+      icon: Waves,
+      description:
+        "SAGE DSP FFT frequency-domain analysis",
+    },
+    {
+      id: "LAPLACE",
+      label: "Laplace",
+      icon: Cpu,
+      description:
+        "SAGE DSP complex-domain analysis",
+    },
+    {
       id: "PROJECTS",
       label: "Project",
-      short: "PROJECTS",
       icon: FolderOpen,
       description:
         "Current capture and analysis summary",
@@ -799,17 +1048,17 @@ function Workspace({
     {
       id: "SETTINGS",
       label: "Settings",
-      short: "SETTINGS",
       icon: Settings2,
       description:
-        "Workspace and application information",
+        "Workspace configuration",
     },
   ];
 
   const activeToolInfo =
     tools.find(
-      (tool) =>
-        tool.id === activeTool
+      (item) =>
+        item.id ===
+        activeTool
     ) || tools[0];
 
   const playbackPercentage =
@@ -818,59 +1067,112 @@ function Workspace({
           100,
           Math.max(
             0,
-            (currentTime / duration) *
+            (currentTime /
+              duration) *
               100
           )
         )
       : 0;
 
   const sampleCount =
-    result?.metadata?.sample_count ??
+    result?.metadata
+      ?.sample_count ??
     samples.length ??
     0;
 
-  /* =========================================================
+  /* ==========================================================
      RENDER
-     ========================================================= */
+     ========================================================== */
 
   return (
     <div className="workspace">
-      {/* =====================================================
+
+      {/* ======================================================
           AUDIO ENGINE
-          ===================================================== */}
+          ====================================================== */}
 
       <audio
-        ref={audioRef}
-        src={audioUrl || undefined}
+        ref={(node) => {
+          localAudioRef.current =
+            node;
+        }}
+        src={
+          audioUrl ||
+          undefined
+        }
         preload="metadata"
+        onLoadedMetadata={(event) => {
+          const value =
+            Number(
+              event.currentTarget
+                .duration
+            );
+
+          if (
+            Number.isFinite(value) &&
+            value > 0
+          ) {
+            setCurrentTime(
+              Math.min(
+                currentTime,
+                value
+              )
+            );
+          }
+        }}
+        onTimeUpdate={(event) => {
+          const value =
+            Number(
+              event.currentTarget
+                .currentTime
+            );
+
+          if (
+            Number.isFinite(value)
+          ) {
+            setCurrentTime(
+              Math.max(
+                0,
+                value
+              )
+            );
+          }
+        }}
         onEnded={() => {
+          setCurrentTime(0);
+
           if (
             typeof onStop ===
-            "function"
+            "function" &&
+            !loop
           ) {
             onStop();
           }
         }}
       />
 
-      {/* =====================================================
+      {/* ======================================================
           TOP BAR
-          ===================================================== */}
+          ====================================================== */}
 
       <header className="workspace-topbar">
+
         <button
           type="button"
           className="workspace-brand"
           onClick={goHome}
           title="Return to SAGE-RF home"
-          aria-label="Return to SAGE-RF home"
         >
           <div className="brand-mark">
-            <Activity size={18} />
+            <Activity
+              size={18}
+            />
           </div>
 
           <div className="workspace-brand-text">
-            <strong>SAGE-RF</strong>
+            <strong>
+              SAGE-RF
+            </strong>
 
             <span>
               RF SIGNAL WORKSTATION
@@ -879,7 +1181,9 @@ function Workspace({
         </button>
 
         <div className="workspace-project">
-          <span>ACTIVE PROJECT</span>
+          <span>
+            ACTIVE PROJECT
+          </span>
 
           <strong
             title={
@@ -897,16 +1201,41 @@ function Workspace({
           title="Digital signal processing engine"
         >
           <span className="status-dot" />
-          <span>DSP ENGINE ONLINE</span>
+
+          <span>
+            SAGE DSP{" "}
+            {dspStatus ===
+            "success"
+              ? "ONLINE"
+              : "READY"}
+          </span>
         </div>
 
         <div className="workspace-top-actions">
+
+          {result?.history_id && (
+            <button
+              type="button"
+              className="workspace-icon-button"
+              onClick={
+                openReport
+              }
+              title="Open PDF report"
+              aria-label="Open PDF report"
+            >
+              <FileAudio
+                size={16}
+              />
+            </button>
+          )}
+
           <button
             type="button"
             className="workspace-icon-button"
             onClick={() =>
               setShowShortcuts(
-                (value) => !value
+                (value) =>
+                  !value
               )
             }
             title="Keyboard shortcuts"
@@ -919,35 +1248,37 @@ function Workspace({
             type="button"
             className="workspace-home-button"
             onClick={goHome}
-            title="Return to SAGE-RF home"
+            title="Return home"
           >
             <Home size={16} />
-            <span>HOME</span>
+            HOME
           </button>
+
         </div>
       </header>
 
-      {/* =====================================================
-          SHORTCUT OVERLAY
-          ===================================================== */}
+      {/* ======================================================
+          SHORTCUT MODAL
+          ====================================================== */}
 
       {showShortcuts && (
         <div
           className="workspace-shortcuts"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Keyboard shortcuts"
           onClick={(event) => {
             if (
               event.target ===
               event.currentTarget
             ) {
-              setShowShortcuts(false);
+              setShowShortcuts(
+                false
+              );
             }
           }}
         >
           <div className="workspace-shortcuts-card">
+
             <div className="panel-header">
+
               <div>
                 <span className="panel-kicker">
                   SAGE-RF
@@ -962,15 +1293,19 @@ function Workspace({
                 type="button"
                 className="control-button"
                 onClick={() =>
-                  setShowShortcuts(false)
+                  setShowShortcuts(
+                    false
+                  )
                 }
-                aria-label="Close shortcuts"
+                title="Close shortcuts"
               >
                 ×
               </button>
+
             </div>
 
             <div className="shortcut-grid">
+
               <Shortcut
                 keyName="Space"
                 label="Play / Pause"
@@ -979,16 +1314,6 @@ function Workspace({
               <Shortcut
                 keyName="← / →"
                 label="Seek 5 seconds"
-              />
-
-              <Shortcut
-                keyName="Home"
-                label="Go to start"
-              />
-
-              <Shortcut
-                keyName="End"
-                label="Go to end"
               />
 
               <Shortcut
@@ -1013,11 +1338,21 @@ function Workspace({
 
               <Shortcut
                 keyName="5"
-                label="Projects"
+                label="Fourier"
               />
 
               <Shortcut
                 keyName="6"
+                label="Laplace"
+              />
+
+              <Shortcut
+                keyName="7"
+                label="Projects"
+              />
+
+              <Shortcut
+                keyName="8"
                 label="Settings"
               />
 
@@ -1025,121 +1360,151 @@ function Workspace({
                 keyName="?"
                 label="Toggle shortcuts"
               />
+
             </div>
           </div>
         </div>
       )}
 
-      {/* =====================================================
+      {/* ======================================================
           MAIN LAYOUT
-          ===================================================== */}
+          ====================================================== */}
 
       <div className="workspace-layout">
-        {/* ===================================================
+
+        {/* ====================================================
             SIDEBAR
-            =================================================== */}
+            ==================================================== */}
 
         <aside className="workspace-sidebar">
+
           <div className="workspace-sidebar-actions">
+
             <button
               type="button"
               className="sidebar-button primary"
-              onClick={onUpload}
+              onClick={() => {
+                if (
+                  typeof onUpload ===
+                  "function"
+                ) {
+                  onUpload();
+                }
+              }}
             >
               <Upload size={16} />
-              <span>IMPORT SIGNAL</span>
+              IMPORT SIGNAL
             </button>
 
             <button
               type="button"
               className="sidebar-button"
               onClick={() =>
-                setActiveTool("PROJECTS")
+                setActiveTool(
+                  "PROJECTS"
+                )
               }
             >
-              <FolderOpen size={16} />
-              <span>PROJECTS</span>
+              <FolderOpen
+                size={16}
+              />
+              PROJECTS
             </button>
+
           </div>
 
           <div className="workspace-sidebar-divider" />
 
-          {/* WORKSPACE NAVIGATION */}
-
           <div className="sidebar-section">
+
             <span className="sidebar-section-title">
               WORKSPACE
             </span>
 
-            <nav
-              className="workspace-tool-nav"
-              aria-label="Workspace navigation"
-            >
-              {tools.map((tool) => {
-                const Icon = tool.icon;
+            <nav className="workspace-tool-nav">
 
-                const active =
-                  activeTool ===
-                  tool.id;
+              {tools.map(
+                (tool) => {
+                  const Icon =
+                    tool.icon;
 
-                return (
-                  <button
-                    type="button"
-                    key={tool.id}
-                    className={
-                      active
-                        ? "sidebar-tool active"
-                        : "sidebar-tool"
-                    }
-                    onClick={() =>
-                      setActiveTool(
+                  const active =
+                    activeTool ===
+                    tool.id;
+
+                  return (
+                    <button
+                      key={
                         tool.id
-                      )
-                    }
-                    title={
-                      tool.description
-                    }
-                    aria-current={
-                      active
-                        ? "page"
-                        : undefined
-                    }
-                  >
-                    <Icon size={14} />
-
-                    <span>
-                      {tool.short}
-                    </span>
-
-                    {active && (
-                      <ChevronRight
-                        size={13}
-                        className="sidebar-tool-arrow"
+                      }
+                      type="button"
+                      className={
+                        active
+                          ? "sidebar-tool active"
+                          : "sidebar-tool"
+                      }
+                      onClick={() =>
+                        setActiveTool(
+                          tool.id
+                        )
+                      }
+                      title={
+                        tool.description
+                      }
+                      aria-current={
+                        active
+                          ? "page"
+                          : undefined
+                      }
+                    >
+                      <Icon
+                        size={14}
                       />
-                    )}
-                  </button>
-                );
-              })}
+
+                      <span>
+                        {tool.label.toUpperCase()}
+                      </span>
+
+                      {active && (
+                        <ChevronRight
+                          size={
+                            13
+                          }
+                        />
+                      )}
+                    </button>
+                  );
+                }
+              )}
+
             </nav>
           </div>
 
           {/* DETECTED SIGNALS */}
 
-          <div className="sidebar-section detected-signals-section">
+          <div className="sidebar-section">
+
             <div className="sidebar-section-heading">
+
               <span className="sidebar-section-title">
                 DETECTED SIGNALS
               </span>
 
-              {signals.length > 0 && (
+              {signals.length >
+                0 && (
                 <span className="signal-count">
-                  {signals.length}
+                  {
+                    signals.length
+                  }
                 </span>
               )}
+
             </div>
 
-            {signals.length > 0 ? (
+            {signals.length >
+            0 ? (
               <div className="signal-list">
+
                 {signals.map(
                   (
                     signal,
@@ -1151,8 +1516,8 @@ function Workspace({
 
                     return (
                       <button
+                        key={`${index}-${signal?.center_frequency_hz}`}
                         type="button"
-                        key={`${signal?.center_frequency_hz ?? "signal"}-${index}`}
                         className={
                           active
                             ? "signal-list-item active"
@@ -1163,15 +1528,9 @@ function Workspace({
                             index
                           )
                         }
-                        title={`Select Signal ${String(
+                        title={`Select signal ${
                           index + 1
-                        ).padStart(
-                          2,
-                          "0"
-                        )}`}
-                        aria-pressed={
-                          active
-                        }
+                        }`}
                       >
                         <i />
 
@@ -1179,7 +1538,8 @@ function Workspace({
                           <strong>
                             SIGNAL{" "}
                             {String(
-                              index + 1
+                              index +
+                                1
                             ).padStart(
                               2,
                               "0"
@@ -1187,12 +1547,9 @@ function Workspace({
                           </strong>
 
                           <span>
-                            {signal
-                              ?.modulation ||
+                            {signal?.modulation ||
                               "Unknown"}
-
                             {" · "}
-
                             {formatHz(
                               signal?.center_frequency_hz
                             )}
@@ -1202,67 +1559,90 @@ function Workspace({
                     );
                   }
                 )}
+
               </div>
             ) : (
               <div className="sidebar-empty">
                 No signals detected
               </div>
             )}
+
           </div>
 
-          {/* ENGINE STATUS */}
+          {/* ENGINE */}
 
           <div className="workspace-sidebar-footer">
-            <div>
-              <span>ENGINE</span>
-              <strong>GNU RADIO</strong>
-            </div>
 
             <div>
-              <span>PROCESSING</span>
-              <strong>SCIPY DSP</strong>
-            </div>
+              <span>
+                ENGINE
+              </span>
 
-            <div>
-              <span>STATUS</span>
-              <strong className="online-text">
-                ONLINE
+              <strong>
+                GNU RADIO
               </strong>
             </div>
+
+            <div>
+              <span>
+                PROCESSING
+              </span>
+
+              <strong>
+                SAGE DSP
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                STATUS
+              </span>
+
+              <strong className="online-text">
+                {dspStatus ===
+                "success"
+                  ? "ONLINE"
+                  : "READY"}
+              </strong>
+            </div>
+
           </div>
+
         </aside>
 
-        {/* ===================================================
-            MAIN CONTENT
-            =================================================== */}
+        {/* ====================================================
+            MAIN
+            ==================================================== */}
 
         <main className="workspace-main">
-          {/* =================================================
-              TRANSPORT BAR
-              ================================================= */}
 
-          <section
-            className="workspace-toolbar professional-transport"
-            aria-label="Audio transport controls"
-          >
+          {/* ==================================================
+              TRANSPORT
+              ================================================== */}
+
+          <section className="workspace-toolbar professional-transport">
+
             <div className="transport transport-main">
+
               <button
                 type="button"
                 className="transport-button"
                 onClick={() =>
                   seekBy(-5)
                 }
-                title="Back 5 seconds"
-                aria-label="Back 5 seconds"
+                title="Seek backward 5 seconds"
+                aria-label="Seek backward 5 seconds"
               >
-                <SkipBack size={17} />
+                <SkipBack
+                  size={17}
+                />
               </button>
 
               <button
                 type="button"
                 className="transport-play"
                 onClick={
-                  handlePlayPause
+                  playPause
                 }
                 title={
                   isPlaying
@@ -1276,22 +1656,28 @@ function Workspace({
                 }
               >
                 {isPlaying ? (
-                  <Pause size={19} />
+                  <Pause
+                    size={19}
+                  />
                 ) : (
-                  <Play size={19} />
+                  <Play
+                    size={19}
+                  />
                 )}
               </button>
 
               <button
                 type="button"
-                className="transport-button stop-button"
+                className="transport-button"
                 onClick={
                   stopPlayback
                 }
-                title="Stop"
+                title="Stop and return to beginning"
                 aria-label="Stop"
               >
-                <Square size={15} />
+                <Square
+                  size={15}
+                />
               </button>
 
               <button
@@ -1300,13 +1686,16 @@ function Workspace({
                 onClick={() =>
                   seekBy(5)
                 }
-                title="Forward 5 seconds"
-                aria-label="Forward 5 seconds"
+                title="Seek forward 5 seconds"
+                aria-label="Seek forward 5 seconds"
               >
-                <SkipForward size={17} />
+                <SkipForward
+                  size={17}
+                />
               </button>
 
-              <div className="transport-time professional-time">
+              <div className="transport-time">
+
                 <strong>
                   {formatTime(
                     currentTime
@@ -1314,43 +1703,65 @@ function Workspace({
                 </strong>
 
                 <span>
-                  / {formatTime(duration)}
+                  /{" "}
+                  {formatTime(
+                    duration
+                  )}
                 </span>
+
               </div>
+
             </div>
 
             <div className="transport-seek">
+
               <div className="seek-track">
+
                 <div
                   className="seek-fill"
                   style={{
-                    width: `${playbackPercentage}%`,
+                    width:
+                      `${playbackPercentage}%`,
                   }}
                 />
 
                 <input
                   type="range"
                   min="0"
-                  max={duration || 0}
+                  max={
+                    duration ||
+                    0
+                  }
                   step="0.001"
-                  value={Math.min(
-                    currentTime,
-                    duration || 0
-                  )}
-                  onChange={(event) =>
+                  value={
+                    duration > 0
+                      ? Math.min(
+                          currentTime,
+                          duration
+                        )
+                      : 0
+                  }
+                  onChange={(
+                    event
+                  ) =>
                     seekTo(
-                      event.target.value
+                      event
+                        .target
+                        .value
                     )
                   }
-                  aria-label="Seek recording"
                   disabled={
                     duration <= 0
                   }
+                  aria-label="Playback position"
                 />
+
               </div>
+
             </div>
 
             <div className="transport-controls">
+
               <button
                 type="button"
                 className={
@@ -1374,16 +1785,20 @@ function Workspace({
                     ? "Unmute"
                     : "Mute"
                 }
-                aria-pressed={muted}
               >
                 {muted ? (
-                  <VolumeX size={16} />
+                  <VolumeX
+                    size={16}
+                  />
                 ) : (
-                  <Volume2 size={16} />
+                  <Volume2
+                    size={16}
+                  />
                 )}
               </button>
 
               <div className="volume-control">
+
                 <input
                   type="range"
                   min="0"
@@ -1399,11 +1814,14 @@ function Workspace({
                   ) => {
                     const value =
                       Number(
-                        event.target
+                        event
+                          .target
                           .value
                       );
 
-                    setVolume(value);
+                    setVolume(
+                      value
+                    );
 
                     setMuted(
                       value === 0
@@ -1411,6 +1829,7 @@ function Workspace({
                   }}
                   aria-label="Volume"
                 />
+
               </div>
 
               <select
@@ -1423,11 +1842,13 @@ function Workspace({
                 ) =>
                   setPlaybackRate(
                     Number(
-                      event.target
+                      event
+                        .target
                         .value
                     )
                   )
                 }
+                title="Playback speed"
                 aria-label="Playback speed"
               >
                 <option value="0.5">
@@ -1478,50 +1899,58 @@ function Workspace({
                     ? "Disable loop"
                     : "Enable loop"
                 }
-                aria-pressed={loop}
               >
-                <Repeat size={16} />
+                <Repeat
+                  size={16}
+                />
               </button>
+
             </div>
 
             <div className="toolbar-actions">
+
               <button
                 type="button"
                 onClick={
                   exportAnalysis
                 }
-                disabled={!result}
-                title={
-                  result
-                    ? "Export analysis JSON"
-                    : "Nothing to export"
+                disabled={
+                  !result
                 }
+                title="Export analysis JSON"
               >
-                <Download size={15} />
-                <span>EXPORT</span>
+                <Download
+                  size={15}
+                />
+                EXPORT
               </button>
 
-              <button
-                type="button"
-                onClick={() =>
-                  setActiveTool(
-                    "PROJECTS"
-                  )
-                }
-              >
-                SAVE PROJECT
-              </button>
+              {result?.history_id && (
+                <button
+                  type="button"
+                  onClick={
+                    openReport
+                  }
+                  title="Open PDF report"
+                >
+                  PDF REPORT
+                </button>
+              )}
+
             </div>
+
           </section>
 
-          {/* =================================================
-              VIEW HEADER
-              ================================================= */}
+          {/* ==================================================
+              HEADER
+              ================================================== */}
 
           <section className="workspace-view-header">
+
             <div className="workspace-view-title">
+
               <span className="workspace-view-kicker">
-                {activeToolInfo.short}
+                {activeToolInfo.label.toUpperCase()}
               </span>
 
               <h1>
@@ -1542,6 +1971,14 @@ function Workspace({
                   "Signal Laboratory"}
 
                 {activeTool ===
+                  "FOURIER" &&
+                  "Fourier Analysis"}
+
+                {activeTool ===
+                  "LAPLACE" &&
+                  "Laplace Analysis"}
+
+                {activeTool ===
                   "PROJECTS" &&
                   "Project Overview"}
 
@@ -1551,24 +1988,34 @@ function Workspace({
               </h1>
 
               <p>
-                {activeToolInfo.description}
+                {
+                  activeToolInfo.description
+                }
               </p>
+
             </div>
 
             <div className="workspace-live-state">
               <span className="status-dot" />
-              <span>LIVE WORKSPACE</span>
+
+              {dspStatus ===
+              "success"
+                ? "DSP ONLINE"
+                : "WORKSPACE READY"}
             </div>
+
           </section>
 
-          {/* =================================================
+          {/* ==================================================
               ANALYSIS
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "ANALYSIS" && (
             <div className="workspace-content analysis-view">
+
               <div className="workspace-grid">
+
                 <SpectrumPanel
                   spectrum={
                     result?.spectrum
@@ -1580,192 +2027,200 @@ function Workspace({
                     result?.waterfall
                   }
                 />
+
               </div>
 
               <section className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      SELECTED SIGNAL
-                    </span>
 
-                    <h3>
-                      Signal Intelligence
-                    </h3>
-                  </div>
-
-                  <span className="live-badge">
-                    <span />
-                    ACTIVE
-                  </span>
-                </div>
+                <PanelHeader
+                  kicker="SELECTED SIGNAL"
+                  title="Signal Intelligence"
+                  icon={
+                    <Signal
+                      size={18}
+                    />
+                  }
+                />
 
                 {selectedCandidate ? (
                   <div className="workspace-intelligence-grid">
+
                     <Metric
                       label="CENTER FREQUENCY"
                       value={formatHz(
-                        selectedCandidate?.center_frequency_hz
+                        selectedCandidate.center_frequency_hz
                       )}
                     />
 
                     <Metric
                       label="BANDWIDTH"
                       value={formatHz(
-                        selectedCandidate?.bandwidth_hz
+                        selectedCandidate.bandwidth_hz
                       )}
                     />
 
                     <Metric
                       label="PEAK"
                       value={formatHz(
-                        selectedCandidate?.peak_frequency_hz
+                        selectedCandidate.peak_frequency_hz
                       )}
                     />
 
                     <Metric
                       label="SNR"
-                      value={
-                        selectedCandidate
-                          ?.snr_db != null
-                          ? `${Number(
-                              selectedCandidate.snr_db
-                            ).toFixed(
-                              1
-                            )} dB`
-                          : "—"
-                      }
+                      value={formatDb(
+                        selectedCandidate.snr_db
+                      )}
                     />
 
                     <Metric
                       label="CONFIDENCE"
                       value={formatConfidence(
-                        selectedCandidate?.confidence
+                        selectedCandidate.confidence
                       )}
                     />
 
                     <Metric
                       label="MODULATION"
                       value={
-                        selectedCandidate
-                          ?.modulation ||
+                        selectedCandidate.modulation ||
                         "Unknown"
                       }
                     />
+
                   </div>
                 ) : (
                   <EmptyState
                     title="No signal selected"
-                    text="Upload and analyse an RF recording, then select a detected signal from the sidebar."
+                    text="Upload and analyse an RF recording, then select a detected signal."
                   />
                 )}
+
               </section>
 
               <section className="workspace-panel timeline-panel">
+
+                <PanelHeader
+                  kicker="SIGNAL TIMELINE"
+                  title="Multi-Signal Timeline"
+                  icon={
+                    <Activity
+                      size={18}
+                    />
+                  }
+                />
+
                 <MultiSignalTimeline />
+
               </section>
+
             </div>
           )}
 
-          {/* =================================================
+          {/* ==================================================
               EDITOR
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "EDITOR" && (
             <section className="workspace-content workspace-editor">
+
               <div className="workspace-panel editor-main-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      WAVEFORM EDITOR
-                    </span>
 
-                    <h3>
-                      Recording Timeline
-                    </h3>
-                  </div>
+                <PanelHeader
+                  kicker="WAVEFORM EDITOR"
+                  title="Recording Timeline"
+                />
 
-                  <div className="editor-controls">
-                    <button
-                      type="button"
-                      className="control-button"
-                      onClick={() =>
-                        setEditorZoom(
-                          Math.max(
-                            0.5,
-                            editorZoom -
-                              0.25
-                          )
+                <div className="editor-controls">
+
+                  <button
+                    type="button"
+                    className="control-button"
+                    onClick={() =>
+                      setEditorZoom(
+                        Math.max(
+                          0.5,
+                          editorZoom -
+                            0.25
                         )
-                      }
-                      title="Zoom out"
-                      aria-label="Zoom out"
-                    >
-                      −
-                    </button>
+                      )
+                    }
+                    title="Zoom out"
+                  >
+                    −
+                  </button>
 
-                    <span>
-                      {Math.round(
-                        editorZoom *
-                          100
-                      )}
-                      %
-                    </span>
+                  <span>
+                    {Math.round(
+                      editorZoom *
+                        100
+                    )}
+                    %
+                  </span>
 
-                    <button
-                      type="button"
-                      className="control-button"
-                      onClick={() =>
-                        setEditorZoom(
-                          Math.min(
-                            4,
-                            editorZoom +
-                              0.25
-                          )
+                  <button
+                    type="button"
+                    className="control-button"
+                    onClick={() =>
+                      setEditorZoom(
+                        Math.min(
+                          4,
+                          editorZoom +
+                            0.25
                         )
-                      }
-                      title="Zoom in"
-                      aria-label="Zoom in"
-                    >
-                      +
-                    </button>
+                      )
+                    }
+                    title="Zoom in"
+                  >
+                    +
+                  </button>
 
-                    <button
-                      type="button"
-                      className="control-button"
-                      onClick={() => {
-                        setEditorZoom(1);
-                        setEditorOffset(0);
-                      }}
-                      title="Reset zoom"
-                      aria-label="Reset zoom"
-                    >
-                      <RotateCcw
-                        size={14}
-                      />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="control-button"
+                    onClick={() => {
+                      setEditorZoom(
+                        1
+                      );
+
+                      setEditorOffset(
+                        0
+                      );
+                    }}
+                    title="Reset editor view"
+                  >
+                    <RotateCcw
+                      size={14}
+                    />
+                  </button>
+
                 </div>
 
                 <div className="editor-ruler">
-                  <span>00:00</span>
+
+                  <span>
+                    00:00
+                  </span>
 
                   <span>
                     {formatShortTime(
-                      duration * 0.25
+                      duration *
+                        0.25
                     )}
                   </span>
 
                   <span>
                     {formatShortTime(
-                      duration * 0.5
+                      duration *
+                        0.5
                     )}
                   </span>
 
                   <span>
                     {formatShortTime(
-                      duration * 0.75
+                      duration *
+                        0.75
                     )}
                   </span>
 
@@ -1774,14 +2229,15 @@ function Workspace({
                       duration
                     )}
                   </span>
+
                 </div>
 
                 <div
                   className="waveform-editor"
-                  onClick={(event) => {
-                    if (
-                      duration <= 0
-                    ) {
+                  onClick={(
+                    event
+                  ) => {
+                    if (!duration) {
                       return;
                     }
 
@@ -1789,9 +2245,15 @@ function Workspace({
                       event.currentTarget.getBoundingClientRect();
 
                     const percentage =
-                      (event.clientX -
-                        rect.left) /
-                      rect.width;
+                      Math.max(
+                        0,
+                        Math.min(
+                          1,
+                          (event.clientX -
+                            rect.left) /
+                            rect.width
+                        )
+                      );
 
                     seekTo(
                       percentage *
@@ -1799,7 +2261,8 @@ function Workspace({
                     );
                   }}
                   role="slider"
-                  aria-label="Waveform position"
+                  tabIndex={0}
+                  aria-label="Recording waveform"
                   aria-valuemin={0}
                   aria-valuemax={
                     duration
@@ -1807,8 +2270,9 @@ function Workspace({
                   aria-valuenow={
                     currentTime
                   }
-                  tabIndex={0}
-                  onKeyDown={(event) => {
+                  onKeyDown={(
+                    event
+                  ) => {
                     if (
                       event.key ===
                       "ArrowLeft"
@@ -1826,53 +2290,38 @@ function Workspace({
                     }
                   }}
                 >
-                  {waveformPoints.length >
-                  0 ? (
-                    <div
-                      className="waveform-editor-inner"
-                      style={{
-                        transform: `translateX(${editorOffset}px) scaleX(${editorZoom})`,
-                      }}
-                    >
-                      {waveformPoints.map(
-                        (
-                          amplitude,
-                          index
-                        ) => (
-                          <span
-                            key={
-                              index
-                            }
-                            style={{
-                              height: `${Math.max(
-                                4,
-                                Math.min(
-                                  100,
-                                  amplitude *
-                                    100
-                                )
-                              )}%`,
-                            }}
-                          />
-                        )
-                      )}
-                    </div>
+
+                  {waveformPoints.length ? (
+                    <WaveformBars
+                      points={
+                        waveformPoints
+                      }
+                      zoom={
+                        editorZoom
+                      }
+                      offset={
+                        editorOffset
+                      }
+                    />
                   ) : (
                     <EmptyState
                       title="No waveform available"
-                      text="The backend did not return decoded waveform samples for this recording."
+                      text="Waveform samples are not available for this recording."
                     />
                   )}
 
                   <div
                     className="editor-playhead"
                     style={{
-                      left: `${playbackPercentage}%`,
+                      left:
+                        `${playbackPercentage}%`,
                     }}
                   />
+
                 </div>
 
                 <div className="editor-footer">
+
                   <Metric
                     label="SAMPLE COUNT"
                     value={formatNumber(
@@ -1886,9 +2335,7 @@ function Workspace({
                       result?.metadata
                         ?.sample_rate
                         ? `${formatNumber(
-                            result
-                              .metadata
-                              .sample_rate
+                            result.metadata.sample_rate
                           )} Hz`
                         : "—"
                     }
@@ -1900,30 +2347,29 @@ function Workspace({
                       duration
                     )}
                   />
+
                 </div>
+
               </div>
 
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      EDIT OPERATIONS
-                    </span>
 
-                    <h3>
-                      Timeline Tools
-                    </h3>
-                  </div>
-                </div>
+                <PanelHeader
+                  kicker="EDITOR TOOLS"
+                  title="Timeline Controls"
+                />
 
                 <div className="editor-tool-grid">
+
                   <button
                     type="button"
                     onClick={() =>
                       seekTo(0)
                     }
                   >
-                    <SkipBack size={16} />
+                    <SkipBack
+                      size={16}
+                    />
                     GO TO START
                   </button>
 
@@ -1931,14 +2377,14 @@ function Workspace({
                     type="button"
                     onClick={() =>
                       seekTo(
-                        duration / 2
+                        duration /
+                          2
                       )
                     }
                     disabled={
-                      duration <= 0
+                      !duration
                     }
                   >
-                    <Zap size={16} />
                     CENTER PLAYHEAD
                   </button>
 
@@ -1946,58 +2392,62 @@ function Workspace({
                     type="button"
                     onClick={() =>
                       setEditorOffset(
-                        (value) =>
-                          value - 20
+                        (
+                          value
+                        ) =>
+                          value -
+                          25
                       )
                     }
                   >
-                    ZOOM LEFT
+                    PAN LEFT
                   </button>
 
                   <button
                     type="button"
                     onClick={() =>
                       setEditorOffset(
-                        (value) =>
-                          value + 20
+                        (
+                          value
+                        ) =>
+                          value +
+                          25
                       )
                     }
                   >
-                    ZOOM RIGHT
+                    PAN RIGHT
                   </button>
+
                 </div>
+
               </div>
+
             </section>
           )}
 
-          {/* =================================================
+          {/* ==================================================
               MIXER
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "MIXER" && (
             <section className="workspace-content workspace-mixer">
+
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      SIGNAL ROUTING
-                    </span>
 
-                    <h3>
-                      Multi-Signal Mixer
-                    </h3>
-                  </div>
+                <PanelHeader
+                  kicker="SIGNAL ROUTING"
+                  title="Multi-Signal Mixer"
+                  icon={
+                    <Radio
+                      size={18}
+                    />
+                  }
+                />
 
-                  <span className="live-badge">
-                    <span />
-                    DSP READY
-                  </span>
-                </div>
-
-                {signals.length >
-                0 ? (
+                {signals.length ? (
                   <div className="mixer-signal-list">
+
                     {signals.map(
                       (
                         signal,
@@ -2005,22 +2455,28 @@ function Workspace({
                       ) => {
                         const confidence =
                           Number(
-                            signal?.confidence ??
-                              0
+                            signal?.confidence
                           );
 
-                        const confidencePercentage =
-                          confidence <= 1
-                            ? confidence *
-                              100
-                            : confidence;
+                        const percent =
+                          Number.isFinite(
+                            confidence
+                          )
+                            ? confidence <=
+                              1
+                              ? confidence *
+                                100
+                              : confidence
+                            : 0;
 
                         return (
                           <div
                             className="mixer-channel"
-                            key={`${signal?.center_frequency_hz ?? "channel"}-${index}`}
+                            key={`${index}-${signal?.center_frequency_hz}`}
                           >
+
                             <div className="mixer-channel-info">
+
                               <div className="mixer-channel-icon">
                                 <Radio
                                   size={
@@ -2042,27 +2498,28 @@ function Workspace({
                                 </strong>
 
                                 <span>
-                                  {signal
-                                    ?.modulation ||
-                                    "Unknown"}{" "}
-                                  ·{" "}
+                                  {signal?.modulation ||
+                                    "Unknown"}
+                                  {" · "}
                                   {formatHz(
                                     signal?.center_frequency_hz
                                   )}
                                 </span>
                               </div>
+
                             </div>
 
                             <div className="mixer-meter">
                               <span
                                 style={{
-                                  width: `${Math.min(
-                                    100,
-                                    Math.max(
-                                      5,
-                                      confidencePercentage
-                                    )
-                                  )}%`,
+                                  width:
+                                    `${Math.max(
+                                      3,
+                                      Math.min(
+                                        100,
+                                        percent
+                                      )
+                                    )}%`,
                                 }}
                               />
                             </div>
@@ -2080,8 +2537,12 @@ function Workspace({
                                   index
                                 )
                               }
-                              title="Select signal"
-                              aria-label={`Select signal ${index + 1}`}
+                              title={`Select signal ${
+                                index + 1
+                              }`}
+                              aria-label={`Select signal ${
+                                index + 1
+                              }`}
                             >
                               <Settings2
                                 size={
@@ -2089,37 +2550,35 @@ function Workspace({
                                 }
                               />
                             </button>
+
                           </div>
                         );
                       }
                     )}
+
                   </div>
                 ) : (
                   <EmptyState
                     title="No detected signals"
-                    text="Run signal analysis to populate mixer channels."
+                    text="Run analysis to populate mixer channels."
                   />
                 )}
+
               </div>
 
-              <div className="workspace-panel mixer-summary">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      OUTPUT BUS
-                    </span>
+              <div className="workspace-panel">
 
-                    <h3>
-                      Master Signal
-                    </h3>
-                  </div>
-                </div>
+                <PanelHeader
+                  kicker="OUTPUT BUS"
+                  title="Master Signal"
+                />
 
                 <div className="master-meter">
                   <span />
                 </div>
 
                 <div className="master-stats">
+
                   <Metric
                     label="ACTIVE CHANNELS"
                     value={
@@ -2138,155 +2597,148 @@ function Workspace({
                       result?.metadata
                         ?.sample_rate
                         ? `${formatNumber(
-                            result
-                              .metadata
-                              .sample_rate
+                            result.metadata.sample_rate
                           )} Hz`
                         : "—"
                     }
                   />
+
                 </div>
+
               </div>
+
             </section>
           )}
 
-          {/* =================================================
+          {/* ==================================================
               SIGNAL LAB
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "SIGNAL LAB" && (
             <section className="workspace-content signal-lab-grid">
+
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      SIGNAL LABORATORY
-                    </span>
 
-                    <h3>
-                      Selected Signal
-                    </h3>
-                  </div>
-
-                  <FlaskConical
-                    size={18}
-                  />
-                </div>
+                <PanelHeader
+                  kicker="SIGNAL LABORATORY"
+                  title="Selected Signal"
+                  icon={
+                    <FlaskConical
+                      size={18}
+                    />
+                  }
+                />
 
                 {selectedCandidate ? (
                   <>
+
                     <div className="lab-frequency">
+
                       <span>
                         CENTER FREQUENCY
                       </span>
 
                       <strong>
                         {formatHz(
-                          selectedCandidate?.center_frequency_hz
+                          selectedCandidate.center_frequency_hz
                         )}
                       </strong>
+
                     </div>
 
                     <div className="lab-grid">
+
                       <Metric
                         label="BANDWIDTH"
                         value={formatHz(
-                          selectedCandidate?.bandwidth_hz
+                          selectedCandidate.bandwidth_hz
                         )}
                       />
 
                       <Metric
                         label="PEAK"
                         value={formatHz(
-                          selectedCandidate?.peak_frequency_hz
+                          selectedCandidate.peak_frequency_hz
                         )}
                       />
 
                       <Metric
                         label="SNR"
-                        value={
-                          selectedCandidate
-                            ?.snr_db !=
-                          null
-                            ? `${Number(
-                                selectedCandidate.snr_db
-                              ).toFixed(
-                                2
-                              )} dB`
-                            : "—"
-                        }
+                        value={formatDb(
+                          selectedCandidate.snr_db
+                        )}
                       />
 
                       <Metric
                         label="MODULATION"
                         value={
-                          selectedCandidate
-                            ?.modulation ||
+                          selectedCandidate.modulation ||
                           "Unknown"
                         }
                       />
+
                     </div>
+
                   </>
                 ) : (
                   <EmptyState
                     title="Select a signal"
-                    text="Choose a detected signal from the sidebar to inspect it."
+                    text="Choose a detected signal from the sidebar."
                   />
                 )}
+
               </div>
 
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      CLASSIFICATION
-                    </span>
 
-                    <h3>
-                      Modulation Evidence
-                    </h3>
-                  </div>
-
-                  <Signal size={18} />
-                </div>
+                <PanelHeader
+                  kicker="CLASSIFICATION"
+                  title="Modulation Evidence"
+                  icon={
+                    <Signal
+                      size={18}
+                    />
+                  }
+                />
 
                 {result?.modulation ? (
                   <div className="lab-evidence">
+
                     <div className="lab-classification">
+
                       <span>
-                        PRIMARY
-                        CLASSIFICATION
+                        PRIMARY CLASSIFICATION
                       </span>
 
                       <strong>
-                        {result
-                          ?.modulation
-                          ?.modulation ||
+                        {result.modulation.modulation ||
                           "Unknown"}
                       </strong>
+
                     </div>
 
                     <div className="lab-confidence">
+
                       <span>
                         CONFIDENCE
                       </span>
 
                       <strong>
                         {formatConfidence(
-                          result
-                            ?.modulation
-                            ?.confidence
+                          result.modulation.confidence
                         )}
                       </strong>
+
                     </div>
 
                     <div className="lab-score-list">
+
                       <Metric
                         label="PSK SCORE"
                         value={formatScore(
                           result
-                            ?.modulation
+                            .modulation
                             ?.evidence
                             ?.psk_score
                         )}
@@ -2296,7 +2748,7 @@ function Workspace({
                         label="FSK SCORE"
                         value={formatScore(
                           result
-                            ?.modulation
+                            .modulation
                             ?.evidence
                             ?.fsk_score
                         )}
@@ -2306,7 +2758,7 @@ function Workspace({
                         label="QAM SCORE"
                         value={formatScore(
                           result
-                            ?.modulation
+                            .modulation
                             ?.evidence
                             ?.qam_score
                         )}
@@ -2316,36 +2768,33 @@ function Workspace({
                         label="AMPLITUDE CV"
                         value={formatScore(
                           result
-                            ?.modulation
+                            .modulation
                             ?.evidence
-                            ?.amplitude_cv,
-                          4
+                            ?.amplitude_cv
                         )}
                       />
+
                     </div>
+
                   </div>
                 ) : (
                   <EmptyState
                     title="No classification evidence"
-                    text="Modulation classification data will appear after analysis."
+                    text="Classification data will appear after analysis."
                   />
                 )}
+
               </div>
 
-              <div className="workspace-panel lab-diagnostics">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      DIAGNOSTICS
-                    </span>
+              <div className="workspace-panel">
 
-                    <h3>
-                      Processing Pipeline
-                    </h3>
-                  </div>
-                </div>
+                <PanelHeader
+                  kicker="DIAGNOSTICS"
+                  title="Processing Pipeline"
+                />
 
                 <div className="diagnostic-chain">
+
                   <PipelineStep
                     label="INPUT"
                     icon={
@@ -2360,7 +2809,7 @@ function Workspace({
                   />
 
                   <PipelineStep
-                    label="DSP"
+                    label="SAGE DSP"
                     icon={
                       <Activity
                         size={16}
@@ -2393,19 +2842,682 @@ function Workspace({
                       />
                     }
                   />
+
                 </div>
+
               </div>
+
             </section>
           )}
 
-          {/* =================================================
+          {/* ==================================================
+              FOURIER
+              ================================================== */}
+
+          {activeTool ===
+            "FOURIER" && (
+            <section className="workspace-content dsp-analysis-view">
+
+              <div className="workspace-panel dsp-hero-panel">
+
+                <PanelHeader
+                  kicker="SAGE DSP"
+                  title="Fourier Domain Analysis"
+                  icon={
+                    <Waves
+                      size={18}
+                    />
+                  }
+                />
+
+                {/* RECORDING WAVEFORM */}
+
+                <DspWaveformPanel
+                  title="SOURCE RECORDING WAVEFORM"
+                  kicker="TIME DOMAIN"
+                  points={
+                    waveformPoints
+                  }
+                  currentTime={
+                    currentTime
+                  }
+                  duration={
+                    duration
+                  }
+                  onSeek={
+                    seekTo
+                  }
+                />
+
+                {fourier ? (
+                  <>
+
+                    <div className="workspace-intelligence-grid">
+
+                      <Metric
+                        label="SAMPLE RATE"
+                        value={
+                          fourier.sample_rate
+                            ? `${formatNumber(
+                                fourier.sample_rate
+                              )} Hz`
+                            : "—"
+                        }
+                      />
+
+                      <Metric
+                        label="FFT SIZE"
+                        value={
+                          fourier.nfft ??
+                          "—"
+                        }
+                      />
+
+                      <Metric
+                        label="HOP SIZE"
+                        value={
+                          fourier.hop_size ??
+                          "—"
+                        }
+                      />
+
+                      <Metric
+                        label="FREQUENCY BINS"
+                        value={formatNumber(
+                          fourier.frequencies_hz
+                            ?.length
+                        )}
+                      />
+
+                      <Metric
+                        label="TIME BLOCKS"
+                        value={formatNumber(
+                          fourier.times_seconds
+                            ?.length
+                        )}
+                      />
+
+                      <Metric
+                        label="FIRST PEAK"
+                        value={formatHz(
+                          fourier
+                            .peak_frequencies_hz
+                            ?.[
+                              0
+                            ]
+                        )}
+                      />
+
+                    </div>
+
+                    <DspVisualization
+                      title="FFT PEAK TRACK"
+                      values={
+                        fourier.peak_frequencies_hz
+                      }
+                      formatter={
+                        formatHz
+                      }
+                    />
+
+                    <DspVisualization
+                      title="FFT POWER TRACE"
+                      values={
+                        Array.isArray(
+                          fourier.power_db
+                        )
+                          ? flattenForChart(
+                              fourier.power_db
+                            )
+                          : []
+                      }
+                      formatter={
+                        formatDb
+                      }
+                    />
+
+                  </>
+                ) : (
+                  <EmptyState
+                    title="Fourier analysis unavailable"
+                    text="Upload a WAV recording and run analysis."
+                  />
+                )}
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="FREQUENCY DOMAIN"
+                  title="FFT Processing Summary"
+                  icon={
+                    <Activity
+                      size={18}
+                    />
+                  }
+                />
+
+                {fourier ? (
+                  <div className="dsp-table">
+
+                    <DspRow
+                      label="FFT bins"
+                      value={formatNumber(
+                        fourier
+                          .frequencies_hz
+                          ?.length
+                      )}
+                    />
+
+                    <DspRow
+                      label="Time blocks"
+                      value={formatNumber(
+                        fourier
+                          .times_seconds
+                          ?.length
+                      )}
+                    />
+
+                    <DspRow
+                      label="FFT size"
+                      value={
+                        fourier.nfft ??
+                        "—"
+                      }
+                    />
+
+                    <DspRow
+                      label="Hop size"
+                      value={
+                        fourier.hop_size ??
+                        "—"
+                      }
+                    />
+
+                    <DspRow
+                      label="Sample rate"
+                      value={
+                        fourier.sample_rate
+                          ? `${formatNumber(
+                              fourier.sample_rate
+                            )} Hz`
+                          : "—"
+                      }
+                    />
+
+                  </div>
+                ) : (
+                  <EmptyState
+                    title="No Fourier result"
+                    text="No SAGE DSP Fourier result is attached."
+                  />
+                )}
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="FOURIER INTERACTION"
+                  title="Playback Navigation"
+                  icon={
+                    <Radio
+                      size={18}
+                    />
+                  }
+                />
+
+                <div className="dsp-action-grid">
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekTo(0)
+                    }
+                  >
+                    <SkipBack
+                      size={15}
+                    />
+                    START
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekBy(-5)
+                    }
+                  >
+                    −5 SEC
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      playPause
+                    }
+                  >
+                    {isPlaying ? (
+                      <>
+                        <Pause
+                          size={15}
+                        />
+                        PAUSE
+                      </>
+                    ) : (
+                      <>
+                        <Play
+                          size={15}
+                        />
+                        PLAY
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekBy(5)
+                    }
+                  >
+                    +5 SEC
+                  </button>
+
+                </div>
+
+              </div>
+
+            </section>
+          )}
+
+          {/* ==================================================
+              LAPLACE
+              ================================================== */}
+
+          {activeTool ===
+            "LAPLACE" && (
+            <section className="workspace-content dsp-analysis-view">
+
+              <div className="workspace-panel dsp-hero-panel">
+
+                <PanelHeader
+                  kicker="SAGE DSP"
+                  title="Laplace Domain Analysis"
+                  icon={
+                    <Cpu
+                      size={18}
+                    />
+                  }
+                />
+
+                {/* RECORDING WAVEFORM */}
+
+                <DspWaveformPanel
+                  title="SOURCE RECORDING WAVEFORM"
+                  kicker="TIME DOMAIN"
+                  points={
+                    waveformPoints
+                  }
+                  currentTime={
+                    currentTime
+                  }
+                  duration={
+                    duration
+                  }
+                  onSeek={
+                    seekTo
+                  }
+                />
+
+                {laplace ? (
+                  <>
+
+                    <div className="workspace-intelligence-grid">
+
+                      <Metric
+                        label="SIGMA POINTS"
+                        value={formatNumber(
+                          laplace
+                            .sigma
+                            ?.length
+                        )}
+                      />
+
+                      <Metric
+                        label="FREQUENCY POINTS"
+                        value={formatNumber(
+                          laplace
+                            .frequencies_hz
+                            ?.length
+                        )}
+                      />
+
+                      <Metric
+                        label="SAMPLES ANALYZED"
+                        value={formatNumber(
+                          laplace
+                            .metadata
+                            ?.sample_count
+                        )}
+                      />
+
+                      <Metric
+                        label="SIGMA MIN"
+                        value={formatSigma(
+                          laplace
+                            .metadata
+                            ?.sigma_min
+                        )}
+                      />
+
+                      <Metric
+                        label="SIGMA MAX"
+                        value={formatSigma(
+                          laplace
+                            .metadata
+                            ?.sigma_max
+                        )}
+                      />
+
+                      <Metric
+                        label="SAMPLE RATE"
+                        value={
+                          laplace
+                            .metadata
+                            ?.sample_rate
+                            ? `${formatNumber(
+                                laplace.metadata.sample_rate
+                              )} Hz`
+                            : "—"
+                        }
+                      />
+
+                    </div>
+
+                    <div className="dsp-highlight-grid">
+
+                      <div className="dsp-highlight-card">
+
+                        <span>
+                          PEAK FREQUENCY
+                        </span>
+
+                        <strong>
+                          {formatHz(
+                            laplace
+                              .peak
+                              ?.frequency_hz
+                          )}
+                        </strong>
+
+                      </div>
+
+                      <div className="dsp-highlight-card">
+
+                        <span>
+                          PEAK SIGMA
+                        </span>
+
+                        <strong>
+                          {formatSigma(
+                            laplace
+                              .peak
+                              ?.sigma
+                          )}
+                        </strong>
+
+                      </div>
+
+                      <div className="dsp-highlight-card">
+
+                        <span>
+                          PEAK MAGNITUDE
+                        </span>
+
+                        <strong>
+                          {formatDb(
+                            laplace
+                              .peak
+                              ?.magnitude_db
+                          )}
+                        </strong>
+
+                      </div>
+
+                    </div>
+
+                    <DspVisualization
+                      title="LAPLACE MAGNITUDE"
+                      values={
+                        laplace.magnitude_db
+                      }
+                      formatter={
+                        formatDb
+                      }
+                    />
+
+                  </>
+                ) : (
+                  <EmptyState
+                    title="Laplace analysis unavailable"
+                    text="Upload a WAV recording and run analysis."
+                  />
+                )}
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="COMPLEX DOMAIN"
+                  title="Laplace Grid"
+                  icon={
+                    <Cpu
+                      size={18}
+                    />
+                  }
+                />
+
+                {laplace ? (
+                  <div className="dsp-table">
+
+                    <DspRow
+                      label="Sigma range"
+                      value={
+                        `${formatSigma(
+                          laplace
+                            .metadata
+                            ?.sigma_min
+                        )} → ${formatSigma(
+                          laplace
+                            .metadata
+                            ?.sigma_max
+                        )}`
+                      }
+                    />
+
+                    <DspRow
+                      label="Sigma points"
+                      value={formatNumber(
+                        laplace
+                          .sigma
+                          ?.length
+                      )}
+                    />
+
+                    <DspRow
+                      label="Frequency points"
+                      value={formatNumber(
+                        laplace
+                          .frequencies_hz
+                          ?.length
+                      )}
+                    />
+
+                    <DspRow
+                      label="Peak frequency"
+                      value={formatHz(
+                        laplace
+                          .peak
+                          ?.frequency_hz
+                      )}
+                    />
+
+                    <DspRow
+                      label="Peak sigma"
+                      value={formatSigma(
+                        laplace
+                          .peak
+                          ?.sigma
+                      )}
+                    />
+
+                    <DspRow
+                      label="Peak magnitude"
+                      value={formatDb(
+                        laplace
+                          .peak
+                          ?.magnitude_db
+                      )}
+                    />
+
+                  </div>
+                ) : (
+                  <EmptyState
+                    title="No Laplace result"
+                    text="No SAGE DSP Laplace result is attached."
+                  />
+                )}
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="LAPLACE INTERACTION"
+                  title="Playback Navigation"
+                  icon={
+                    <Radio
+                      size={18}
+                    />
+                  }
+                />
+
+                <div className="dsp-action-grid">
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekTo(0)
+                    }
+                  >
+                    <SkipBack
+                      size={15}
+                    />
+                    START
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekBy(-5)
+                    }
+                  >
+                    −5 SEC
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      playPause
+                    }
+                  >
+                    {isPlaying ? (
+                      <>
+                        <Pause
+                          size={15}
+                        />
+                        PAUSE
+                      </>
+                    ) : (
+                      <>
+                        <Play
+                          size={15}
+                        />
+                        PLAY
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      seekBy(5)
+                    }
+                  >
+                    +5 SEC
+                  </button>
+
+                </div>
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="ANALYSIS NOTE"
+                  title="Interpretation"
+                  icon={
+                    <Info
+                      size={18}
+                    />
+                  }
+                />
+
+                <div className="workspace-note">
+
+                  <p>
+                    The SAGE DSP Laplace
+                    stage evaluates the
+                    sampled signal over
+                    a complex
+                    sigma/frequency grid.
+                  </p>
+
+                  <p>
+                    Large recordings use
+                    a limited analysis
+                    window for the
+                    Laplace calculation
+                    to keep the
+                    workstation
+                    responsive.
+                  </p>
+
+                  <p>
+                    Fourier analysis
+                    continues across
+                    overlapping blocks
+                    of the recording.
+                  </p>
+
+                </div>
+
+              </div>
+
+            </section>
+          )}
+
+          {/* ==================================================
               PROJECTS
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "PROJECTS" && (
             <section className="workspace-content projects-view">
+
               <div className="workspace-panel project-hero">
+
                 <div className="project-icon">
                   <FileAudio
                     size={24}
@@ -2413,41 +3525,46 @@ function Workspace({
                 </div>
 
                 <div className="project-hero-content">
+
                   <span className="panel-kicker">
                     ACTIVE CAPTURE
                   </span>
 
-                  <h2
-                    title={
-                      result?.filename ||
-                      "Untitled Capture"
-                    }
-                  >
+                  <h2>
                     {result?.filename ||
                       "Untitled Capture"}
                   </h2>
 
                   <p>
-                    Current RF recording
+                    Current recording
                     loaded into the
-                    SAGE-RF
-                    workstation.
+                    SAGE-RF workstation.
                   </p>
+
                 </div>
 
                 <button
                   type="button"
                   className="workspace-action-primary"
-                  onClick={onUpload}
+                  onClick={() => {
+                    if (
+                      typeof onUpload ===
+                      "function"
+                    ) {
+                      onUpload();
+                    }
+                  }}
                 >
-                  <Upload size={15} />
-                  <span>
-                    IMPORT ANOTHER
-                  </span>
+                  <Upload
+                    size={15}
+                  />
+                  IMPORT ANOTHER
                 </button>
+
               </div>
 
               <div className="project-info-grid">
+
                 <ProjectInfo
                   icon={Database}
                   label="SOURCE FORMAT"
@@ -2465,9 +3582,7 @@ function Workspace({
                     result?.metadata
                       ?.sample_rate
                       ? `${formatNumber(
-                          result
-                            .metadata
-                            .sample_rate
+                          result.metadata.sample_rate
                         )} Hz`
                       : "—"
                   }
@@ -2490,27 +3605,18 @@ function Workspace({
                     signals.length
                   }
                 />
+
               </div>
 
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      PROJECT STATUS
-                    </span>
 
-                    <h3>
-                      Analysis Summary
-                    </h3>
-                  </div>
-
-                  <span className="live-badge">
-                    <span />
-                    LOADED
-                  </span>
-                </div>
+                <PanelHeader
+                  kicker="ANALYSIS SUMMARY"
+                  title="Current Recording"
+                />
 
                 <div className="project-summary">
+
                   <Metric
                     label="PEAK FREQUENCY"
                     value={formatHz(
@@ -2529,19 +3635,10 @@ function Workspace({
 
                   <Metric
                     label="SNR"
-                    value={
+                    value={formatDb(
                       result?.spectrum
-                        ?.snr_db !=
-                      null
-                        ? `${Number(
-                            result
-                              .spectrum
-                              .snr_db
-                          ).toFixed(
-                            1
-                          )} dB`
-                        : "—"
-                    }
+                        ?.snr_db
+                    )}
                   />
 
                   <Metric
@@ -2553,36 +3650,87 @@ function Workspace({
                       "—"
                     }
                   />
+
                 </div>
+
               </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="SAGE DSP"
+                  title="DSP Engine Status"
+                  icon={
+                    <Cpu
+                      size={18}
+                    />
+                  }
+                />
+
+                <div className="project-summary">
+
+                  <Metric
+                    label="ENGINE STATUS"
+                    value={dspStatus.toUpperCase()}
+                  />
+
+                  <Metric
+                    label="FOURIER"
+                    value={
+                      fourier
+                        ? "READY"
+                        : "—"
+                    }
+                  />
+
+                  <Metric
+                    label="LAPLACE"
+                    value={
+                      laplace
+                        ? "READY"
+                        : "—"
+                    }
+                  />
+
+                  <Metric
+                    label="SAMPLES ANALYZED"
+                    value={formatNumber(
+                      sageDsp
+                        ?.metadata
+                        ?.sample_count ??
+                        sampleCount
+                    )}
+                  />
+
+                </div>
+
+              </div>
+
             </section>
           )}
 
-          {/* =================================================
+          {/* ==================================================
               SETTINGS
-              ================================================= */}
+              ================================================== */}
 
           {activeTool ===
             "SETTINGS" && (
             <section className="workspace-content settings-view">
+
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      WORKSPACE
-                    </span>
 
-                    <h3>
-                      SAGE-RF Configuration
-                    </h3>
-                  </div>
-
-                  <Settings2
-                    size={18}
-                  />
-                </div>
+                <PanelHeader
+                  kicker="WORKSPACE"
+                  title="SAGE-RF Configuration"
+                  icon={
+                    <Settings2
+                      size={18}
+                    />
+                  }
+                />
 
                 <div className="settings-list">
+
                   <SettingRow
                     label="DSP ENGINE"
                     value="GNU Radio"
@@ -2591,6 +3739,16 @@ function Workspace({
                   <SettingRow
                     label="DSP PROCESSING"
                     value="SciPy"
+                  />
+
+                  <SettingRow
+                    label="SAGE DSP"
+                    value={
+                      dspStatus ===
+                      "success"
+                        ? "ONLINE"
+                        : "READY"
+                    }
                   />
 
                   <SettingRow
@@ -2604,26 +3762,23 @@ function Workspace({
                   />
 
                   <SettingRow
-                    label="WORKSPACE STATUS"
+                    label="WORKSPACE"
                     value="ONLINE"
                   />
+
                 </div>
+
               </div>
 
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      CURRENT RECORDING
-                    </span>
 
-                    <h3>
-                      Recording Information
-                    </h3>
-                  </div>
-                </div>
+                <PanelHeader
+                  kicker="CURRENT RECORDING"
+                  title="Recording Information"
+                />
 
                 <div className="project-summary">
+
                   <Metric
                     label="FILE"
                     value={
@@ -2652,21 +3807,81 @@ function Workspace({
                       signals.length
                     }
                   />
+
                 </div>
+
               </div>
 
               <div className="workspace-panel">
-                <div className="panel-header">
-                  <div>
-                    <span className="panel-kicker">
-                      HELP
-                    </span>
 
-                    <h3>
-                      Keyboard Navigation
-                    </h3>
-                  </div>
+                <PanelHeader
+                  kicker="SAGE DSP"
+                  title="Processing Configuration"
+                  icon={
+                    <Cpu
+                      size={18}
+                    />
+                  }
+                />
+
+                <div className="settings-list">
+
+                  <SettingRow
+                    label="FOURIER FFT"
+                    value={
+                      fourier?.nfft ??
+                      "4096"
+                    }
+                  />
+
+                  <SettingRow
+                    label="FOURIER HOP"
+                    value={
+                      fourier?.hop_size ??
+                      "2048"
+                    }
+                  />
+
+                  <SettingRow
+                    label="LAPLACE SIGMA"
+                    value={
+                      laplace
+                        ? `${formatSigma(
+                            laplace
+                              .metadata
+                              ?.sigma_min
+                          )} → ${formatSigma(
+                            laplace
+                              .metadata
+                              ?.sigma_max
+                          )}`
+                        : "-5 → 5"
+                    }
+                  />
+
+                  <SettingRow
+                    label="LAPLACE FREQUENCY GRID"
+                    value={
+                      laplace
+                        ? `${formatNumber(
+                            laplace
+                              .frequencies_hz
+                              ?.length
+                          )} points`
+                        : "128 points"
+                    }
+                  />
+
                 </div>
+
+              </div>
+
+              <div className="workspace-panel">
+
+                <PanelHeader
+                  kicker="HELP"
+                  title="Keyboard Navigation"
+                />
 
                 <button
                   type="button"
@@ -2677,55 +3892,290 @@ function Workspace({
                     )
                   }
                 >
-                  <Info size={15} />
-                  <span>
-                    VIEW SHORTCUTS
-                  </span>
+                  <Info
+                    size={15}
+                  />
+                  VIEW SHORTCUTS
                 </button>
+
               </div>
+
             </section>
           )}
+
         </main>
       </div>
     </div>
   );
 }
 
-/* ===========================================================
-   HELPERS
-   =========================================================== */
 
-function sanitizeFilename(filename) {
-  return String(filename)
-    .replace(
-      /[^a-zA-Z0-9._-]+/g,
-      "_"
-    )
-    .replace(
-      /^_+|_+$/g,
-      ""
-    )
-    .slice(0, 120) || "sage-rf-analysis";
-}
+/* ============================================================
+   WAVEFORM BARS
+   ============================================================ */
 
-function formatScore(
-  value,
-  decimals = 3
-) {
-  const numericValue = Number(value);
-
-  if (!Number.isFinite(numericValue)) {
-    return "0.000";
+function WaveformBars({
+  points = [],
+  zoom = 1,
+  offset = 0,
+}) {
+  if (!points.length) {
+    return null;
   }
 
-  return numericValue.toFixed(
-    decimals
+  return (
+    <div
+      className="waveform-editor-inner"
+      style={{
+        transform:
+          `translateX(${offset}px) scaleX(${zoom})`,
+      }}
+    >
+      {points.map(
+        (
+          amplitude,
+          index
+        ) => (
+          <span
+            key={index}
+            style={{
+              height:
+                `${Math.max(
+                  4,
+                  amplitude *
+                    100
+                )}%`,
+            }}
+          />
+        )
+      )}
+    </div>
   );
 }
 
-/* ===========================================================
-   REUSABLE COMPONENTS
-   =========================================================== */
+
+/* ============================================================
+   DSP WAVEFORM PANEL
+   ============================================================ */
+
+function DspWaveformPanel({
+  title,
+  kicker,
+  points = [],
+  currentTime = 0,
+  duration = 0,
+  onSeek,
+}) {
+  const percentage =
+    duration > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            (currentTime /
+              duration) *
+              100
+          )
+        )
+      : 0;
+
+  function handleClick(
+    event
+  ) {
+    if (
+      !duration ||
+      typeof onSeek !==
+        "function"
+    ) {
+      return;
+    }
+
+    const rect =
+      event.currentTarget.getBoundingClientRect();
+
+    const fraction =
+      Math.max(
+        0,
+        Math.min(
+          1,
+          (event.clientX -
+            rect.left) /
+            rect.width
+        )
+      );
+
+    onSeek(
+      fraction *
+        duration
+    );
+  }
+
+  return (
+    <div className="workspace-panel dsp-source-waveform">
+
+      <div className="panel-header">
+
+        <div>
+          <span className="panel-kicker">
+            {kicker}
+          </span>
+
+          <h3>
+            {title}
+          </h3>
+        </div>
+
+        <span className="dsp-chart-range">
+          {formatWaveformTime(
+            currentTime
+          )}{" "}
+          /{" "}
+          {formatWaveformTime(
+            duration
+          )}
+        </span>
+
+      </div>
+
+      <div
+        className="dsp-source-waveform-canvas"
+        onClick={
+          handleClick
+        }
+        role="slider"
+        tabIndex={0}
+        aria-label={title}
+        aria-valuemin={0}
+        aria-valuemax={
+          duration
+        }
+        aria-valuenow={
+          currentTime
+        }
+        onKeyDown={(
+          event
+        ) => {
+          if (
+            event.key ===
+            "ArrowLeft"
+          ) {
+            event.preventDefault();
+
+            if (
+              typeof onSeek ===
+              "function"
+            ) {
+              onSeek(
+                Math.max(
+                  0,
+                  currentTime -
+                    1
+                )
+              );
+            }
+          }
+
+          if (
+            event.key ===
+            "ArrowRight"
+          ) {
+            event.preventDefault();
+
+            if (
+              typeof onSeek ===
+              "function"
+            ) {
+              onSeek(
+                Math.min(
+                  duration,
+                  currentTime +
+                    1
+                )
+              );
+            }
+          }
+        }}
+      >
+
+        {points.length ? (
+          <svg
+            viewBox="0 0 1000 220"
+            preserveAspectRatio="none"
+            role="img"
+            aria-label="Source recording waveform"
+          >
+            <line
+              x1="0"
+              y1="110"
+              x2="1000"
+              y2="110"
+              className="dsp-chart-grid-line"
+            />
+
+            <polyline
+              points={createWaveformSvgPoints(
+                points,
+                1000,
+                220
+              )}
+              fill="none"
+              className="dsp-chart-line"
+            />
+
+            <line
+              x1={
+                percentage * 10
+              }
+              y1="0"
+              x2={
+                percentage * 10
+              }
+              y2="220"
+              className="dsp-waveform-playhead"
+            />
+          </svg>
+        ) : (
+          <EmptyState
+            title="No waveform available"
+            text="The source recording waveform is not available."
+          />
+        )}
+
+      </div>
+
+    </div>
+  );
+}
+
+
+/* ============================================================
+   COMPONENTS
+   ============================================================ */
+
+function PanelHeader({
+  kicker,
+  title,
+  icon,
+}) {
+  return (
+    <div className="panel-header">
+
+      <div>
+        <span className="panel-kicker">
+          {kicker}
+        </span>
+
+        <h3>
+          {title}
+        </h3>
+      </div>
+
+      {icon}
+
+    </div>
+  );
+}
+
 
 function Metric({
   label,
@@ -2733,16 +4183,23 @@ function Metric({
 }) {
   return (
     <div className="workspace-metric">
-      <span>{label}</span>
+
+      <span>
+        {label}
+      </span>
 
       <strong
-        title={String(value)}
+        title={String(
+          value
+        )}
       >
         {value}
       </strong>
+
     </div>
   );
 }
+
 
 function ProjectInfo({
   icon: Icon,
@@ -2751,22 +4208,33 @@ function ProjectInfo({
 }) {
   return (
     <div className="project-info-card">
+
       <div className="project-info-icon">
-        <Icon size={17} />
+        <Icon
+          size={17}
+        />
       </div>
 
       <div>
-        <span>{label}</span>
+
+        <span>
+          {label}
+        </span>
 
         <strong
-          title={String(value)}
+          title={String(
+            value
+          )}
         >
           {value}
         </strong>
+
       </div>
+
     </div>
   );
 }
+
 
 function EmptyState({
   title,
@@ -2774,12 +4242,19 @@ function EmptyState({
 }) {
   return (
     <div className="workspace-empty">
-      <strong>{title}</strong>
 
-      <span>{text}</span>
+      <strong>
+        {title}
+      </strong>
+
+      <span>
+        {text}
+      </span>
+
     </div>
   );
 }
+
 
 function Shortcut({
   keyName,
@@ -2787,12 +4262,19 @@ function Shortcut({
 }) {
   return (
     <div className="shortcut-row">
-      <kbd>{keyName}</kbd>
 
-      <span>{label}</span>
+      <kbd>
+        {keyName}
+      </kbd>
+
+      <span>
+        {label}
+      </span>
+
     </div>
   );
 }
+
 
 function PipelineStep({
   icon,
@@ -2800,12 +4282,17 @@ function PipelineStep({
 }) {
   return (
     <div className="pipeline-step">
+
       {icon}
 
-      <span>{label}</span>
+      <span>
+        {label}
+      </span>
+
     </div>
   );
 }
+
 
 function SettingRow({
   label,
@@ -2813,11 +4300,537 @@ function SettingRow({
 }) {
   return (
     <div className="setting-row">
-      <span>{label}</span>
 
-      <strong>{value}</strong>
+      <span>
+        {label}
+      </span>
+
+      <strong>
+        {value}
+      </strong>
+
     </div>
   );
 }
+
+
+function DspRow({
+  label,
+  value,
+}) {
+  return (
+    <div className="dsp-table-row">
+
+      <span>
+        {label}
+      </span>
+
+      <strong>
+        {value}
+      </strong>
+
+    </div>
+  );
+}
+
+
+/* ============================================================
+   DSP VISUALIZATION
+   ============================================================ */
+
+function DspVisualization({
+  title,
+  values,
+  formatter,
+}) {
+  const data = useMemo(
+    () =>
+      flattenForChart(
+        values
+      ).slice(0, 400),
+    [values]
+  );
+
+  if (!data.length) {
+    return (
+      <div className="workspace-panel">
+
+        <div className="panel-header">
+
+          <div>
+            <span className="panel-kicker">
+              SAGE DSP
+            </span>
+
+            <h3>
+              {title}
+            </h3>
+          </div>
+
+        </div>
+
+        <EmptyState
+          title="No visualization data"
+          text="The current DSP result does not contain a plottable trace."
+        />
+
+      </div>
+    );
+  }
+
+  const width = 900;
+  const height = 230;
+
+  const min =
+    Math.min(...data);
+
+  const rawMax =
+    Math.max(...data);
+
+  const max =
+    rawMax === min
+      ? min + 1
+      : rawMax;
+
+  const points = data
+    .map(
+      (
+        value,
+        index
+      ) => {
+        const x =
+          data.length === 1
+            ? width / 2
+            : (index /
+                (data.length -
+                  1)) *
+              width;
+
+        const y =
+          height -
+          ((value - min) /
+            (max - min)) *
+            (height - 20) -
+          10;
+
+        return `${x},${y}`;
+      }
+    )
+    .join(" ");
+
+  const safeFormatter =
+    typeof formatter ===
+    "function"
+      ? formatter
+      : (value) =>
+          String(value);
+
+  return (
+    <div className="workspace-panel dsp-chart-panel">
+
+      <div className="panel-header">
+
+        <div>
+          <span className="panel-kicker">
+            SAGE DSP
+          </span>
+
+          <h3>
+            {title}
+          </h3>
+        </div>
+
+        <span className="dsp-chart-range">
+          {safeFormatter(
+            min
+          )}{" "}
+          →{" "}
+          {safeFormatter(
+            max
+          )}
+        </span>
+
+      </div>
+
+      <div className="dsp-svg-chart">
+
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label={title}
+        >
+
+          <line
+            x1="0"
+            y1={
+              height / 2
+            }
+            x2={width}
+            y2={
+              height / 2
+            }
+            className="dsp-chart-grid-line"
+          />
+
+          <polyline
+            points={points}
+            fill="none"
+            className="dsp-chart-line"
+          />
+
+        </svg>
+
+      </div>
+
+    </div>
+  );
+}
+
+
+/* ============================================================
+   DATA HELPERS
+   ============================================================ */
+
+function getSampleMagnitude(
+  value
+) {
+  if (
+    typeof value ===
+      "object" &&
+    value !== null
+  ) {
+    const real =
+      Number(
+        value.real || 0
+      );
+
+    const imag =
+      Number(
+        value.imag || 0
+      );
+
+    return Math.sqrt(
+      real * real +
+        imag * imag
+    );
+  }
+
+  return Math.abs(
+    Number(value) || 0
+  );
+}
+
+
+function buildWaveformPoints(
+  source,
+  count = 260
+) {
+  if (
+    !Array.isArray(source) ||
+    !source.length
+  ) {
+    return [];
+  }
+
+  const values =
+    source.map(
+      getSampleMagnitude
+    );
+
+  if (
+    values.length <= count
+  ) {
+    const max =
+      Math.max(
+        ...values,
+        1
+      );
+
+    return values.map(
+      (value) =>
+        value / max
+    );
+  }
+
+  const points = [];
+
+  const step =
+    values.length /
+    count;
+
+  for (
+    let i = 0;
+    i < count;
+    i += 1
+  ) {
+    const start =
+      Math.floor(
+        i * step
+      );
+
+    const end =
+      Math.min(
+        values.length,
+        Math.max(
+          start + 1,
+          Math.floor(
+            (i + 1) *
+              step
+          )
+        )
+      );
+
+    let peak = 0;
+
+    for (
+      let j = start;
+      j < end;
+      j += 1
+    ) {
+      peak = Math.max(
+        peak,
+        values[j]
+      );
+    }
+
+    points.push(
+      peak
+    );
+  }
+
+  const max =
+    Math.max(
+      ...points,
+      1
+    );
+
+  return points.map(
+    (value) =>
+      value / max
+  );
+}
+
+
+function createWaveformSvgPoints(
+  points,
+  width,
+  height
+) {
+  if (!points.length) {
+    return "";
+  }
+
+  const center =
+    height / 2;
+
+  const amplitude =
+    height * 0.42;
+
+  return points
+    .map(
+      (
+        value,
+        index
+      ) => {
+        const x =
+          points.length ===
+          1
+            ? width / 2
+            : (index /
+                (points.length -
+                  1)) *
+              width;
+
+        const normalized =
+          Math.max(
+            -1,
+            Math.min(
+              1,
+              Number(value) ||
+                0
+            )
+          );
+
+        const y =
+          center -
+          normalized *
+            amplitude;
+
+        return `${x},${y}`;
+      }
+    )
+    .join(" ");
+}
+
+
+function flattenForChart(
+  value
+) {
+  if (
+    !Array.isArray(value)
+  ) {
+    return [];
+  }
+
+  const output = [];
+
+  function visit(item) {
+    if (
+      Array.isArray(item)
+    ) {
+      item.forEach(
+        visit
+      );
+
+      return;
+    }
+
+    if (
+      typeof item ===
+        "object" &&
+      item !== null
+    ) {
+      if (
+        Number.isFinite(
+          Number(
+            item.real
+          )
+        )
+      ) {
+        const real =
+          Number(
+            item.real
+          );
+
+        const imag =
+          Number(
+            item.imag || 0
+          );
+
+        output.push(
+          Math.sqrt(
+            real * real +
+              imag * imag
+          )
+        );
+
+        return;
+      }
+
+      /*
+       * Some DSP backends can return objects containing
+       * a direct numeric value. Support that without
+       * changing the existing result contract.
+       */
+      if (
+        Number.isFinite(
+          Number(
+            item.value
+          )
+        )
+      ) {
+        output.push(
+          Number(
+            item.value
+          )
+        );
+      }
+
+      return;
+    }
+
+    const number =
+      Number(item);
+
+    if (
+      Number.isFinite(
+        number
+      )
+    ) {
+      output.push(
+        number
+      );
+    }
+  }
+
+  visit(value);
+
+  return output;
+}
+
+
+function formatWaveformTime(
+  value
+) {
+  const n =
+    Number(value);
+
+  if (
+    !Number.isFinite(n) ||
+    n < 0
+  ) {
+    return "00:00.000";
+  }
+
+  const minutes =
+    Math.floor(
+      n / 60
+    );
+
+  const seconds =
+    Math.floor(
+      n % 60
+    );
+
+  const millis =
+    Math.floor(
+      (n % 1) * 1000
+    );
+
+  return (
+    `${String(
+      minutes
+    ).padStart(
+      2,
+      "0"
+    )}:` +
+    `${String(
+      seconds
+    ).padStart(
+      2,
+      "0"
+    )}.` +
+    `${String(
+      millis
+    ).padStart(
+      3,
+      "0"
+    )}`
+  );
+}
+
+
+function sanitizeFilename(
+  filename
+) {
+  return String(
+    filename
+  )
+    .replace(
+      /[^a-zA-Z0-9._-]+/g,
+      "_"
+    )
+    .replace(
+      /^_+|_+$/g,
+      ""
+    )
+    .slice(
+      0,
+      120
+    ) ||
+    "sage-rf-analysis";
+}
+
 
 export default Workspace;
