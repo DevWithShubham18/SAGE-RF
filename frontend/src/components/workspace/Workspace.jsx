@@ -99,7 +99,7 @@ function Workspace({
 
   const samples = useMemo(() => {
     if (
-      Array.isArray(waveformSamples) &&
+      isSampleCollection(waveformSamples) &&
       waveformSamples.length
     ) {
       return waveformSamples;
@@ -163,6 +163,124 @@ function Workspace({
 
   const fourier =
     sageDsp?.fourier || null;
+
+  const fourierPowerSpectrum = useMemo(() => {
+    const power = fourier?.power_db;
+
+    if (!Array.isArray(power) || !power.length) {
+      return [];
+    }
+
+    const spectrum = !Array.isArray(power[0])
+      ? power.filter(Number.isFinite)
+      : Array.from(
+          {
+            length: Math.max(
+              0,
+              ...power.map((row) =>
+                Array.isArray(row) ? row.length : 0
+              )
+            ),
+          },
+          (_, binIndex) => {
+            let maximum = -Infinity;
+
+            power.forEach((row) => {
+              const value = Number(row?.[binIndex]);
+
+              if (Number.isFinite(value)) {
+                maximum = Math.max(maximum, value);
+              }
+            });
+
+            return Number.isFinite(maximum) ? maximum : null;
+          }
+        ).filter(Number.isFinite);
+
+    if (spectrum.length <= 400) {
+      return spectrum;
+    }
+
+    return Array.from({ length: 400 }, (_, index) => {
+      const sourceIndex = Math.round(
+        (index / 399) * (spectrum.length - 1)
+      );
+
+      return spectrum[sourceIndex];
+    });
+  }, [fourier]);
+
+  const fourierTimeBlockIndex = useMemo(() => {
+    const power = fourier?.power_db;
+
+    if (!Array.isArray(power) || !Array.isArray(power[0])) {
+      return 0;
+    }
+
+    const lastIndex = Math.max(0, power.length - 1);
+
+    if (!duration) {
+      return 0;
+    }
+
+    return Math.min(
+      lastIndex,
+      Math.max(
+        0,
+        Math.round((currentTime / duration) * lastIndex)
+      )
+    );
+  }, [currentTime, duration, fourier]);
+
+  const fourierLiveSpectrum = useMemo(() => {
+    const power = fourier?.power_db;
+
+    if (!Array.isArray(power) || !power.length) {
+      return [];
+    }
+
+    const values = Array.isArray(power[0])
+      ? power[fourierTimeBlockIndex] || []
+      : power;
+
+    const finiteValues = values.filter(Number.isFinite);
+
+    if (finiteValues.length <= 400) {
+      return finiteValues;
+    }
+
+    return Array.from({ length: 400 }, (_, index) => {
+      const sourceIndex = Math.round(
+        (index / 399) * (finiteValues.length - 1)
+      );
+
+      return finiteValues[sourceIndex];
+    });
+  }, [fourier, fourierTimeBlockIndex]);
+
+  const fourierSpectrumFrequencies = useMemo(() => {
+    const frequencies = fourier?.frequencies_hz;
+    const pointCount = fourierLiveSpectrum.length || fourierPowerSpectrum.length;
+
+    if (!Array.isArray(frequencies) || !frequencies.length || !pointCount) {
+      return [];
+    }
+
+    if (frequencies.length === pointCount) {
+      return frequencies;
+    }
+
+    return Array.from({ length: pointCount }, (_, index) => {
+      const sourceIndex = pointCount === 1
+        ? 0
+        : Math.round(
+            (index / (pointCount - 1)) *
+              (frequencies.length - 1)
+          );
+
+      return frequencies[sourceIndex];
+    });
+  }, [fourier, fourierLiveSpectrum, fourierPowerSpectrum]);
 
   const laplace =
     sageDsp?.laplace || null;
@@ -1421,7 +1539,10 @@ function Workspace({
               WORKSPACE
             </span>
 
-            <nav className="workspace-tool-nav">
+            <nav
+              className="workspace-tool-nav"
+              aria-label="Workstation tools"
+            >
 
               {tools.map(
                 (tool) => {
@@ -1528,6 +1649,7 @@ function Workspace({
                             index
                           )
                         }
+                        aria-pressed={active}
                         title={`Select signal ${
                           index + 1
                         }`}
@@ -2147,6 +2269,7 @@ function Workspace({
                       )
                     }
                     title="Zoom out"
+                    aria-label="Zoom out waveform"
                   >
                     −
                   </button>
@@ -2172,6 +2295,7 @@ function Workspace({
                       )
                     }
                     title="Zoom in"
+                    aria-label="Zoom in waveform"
                   >
                     +
                   </button>
@@ -2189,6 +2313,7 @@ function Workspace({
                       );
                     }}
                     title="Reset editor view"
+                    aria-label="Reset editor view"
                   >
                     <RotateCcw
                       size={14}
@@ -2543,6 +2668,10 @@ function Workspace({
                               aria-label={`Select signal ${
                                 index + 1
                               }`}
+                              aria-pressed={
+                                selectedSignal ===
+                                index
+                              }
                             >
                               <Settings2
                                 size={
@@ -2616,7 +2745,10 @@ function Workspace({
 
           {activeTool ===
             "SIGNAL LAB" && (
-            <section className="workspace-content signal-lab-grid">
+            <section
+              className="workspace-content signal-lab-grid"
+              aria-label="Signal laboratory diagnostics"
+            >
 
               <div className="workspace-panel">
 
@@ -2856,7 +2988,10 @@ function Workspace({
 
           {activeTool ===
             "FOURIER" && (
-            <section className="workspace-content dsp-analysis-view">
+            <section
+              className="workspace-content dsp-analysis-view fourier-view"
+              aria-label="Fourier frequency-domain analysis"
+            >
 
               <div className="workspace-panel dsp-hero-panel">
 
@@ -2961,19 +3096,17 @@ function Workspace({
                     />
 
                     <DspVisualization
-                      title="FFT POWER TRACE"
-                      values={
-                        Array.isArray(
-                          fourier.power_db
-                        )
-                          ? flattenForChart(
-                              fourier.power_db
-                            )
-                          : []
-                      }
+                      title="LIVE FFT POWER SPECTRUM"
+                      values={fourierLiveSpectrum}
                       formatter={
                         formatDb
                       }
+                      xValues={fourierSpectrumFrequencies}
+                      xFormatter={formatHz}
+                      referenceValues={fourierPowerSpectrum}
+                      referenceLabel="MAX HOLD"
+                      statusText={`${isPlaying ? "PLAYING" : "PAUSED"} · BLOCK ${fourierTimeBlockIndex + 1} / ${Array.isArray(fourier.power_db) ? fourier.power_db.length : 0} · ${formatWaveformTime(currentTime)}`}
+                      interactive
                     />
 
                   </>
@@ -3136,7 +3269,10 @@ function Workspace({
 
           {activeTool ===
             "LAPLACE" && (
-            <section className="workspace-content dsp-analysis-view">
+            <section
+              className="workspace-content dsp-analysis-view laplace-view"
+              aria-label="Laplace complex-domain analysis"
+            >
 
               <div className="workspace-panel dsp-hero-panel">
 
@@ -3286,14 +3422,18 @@ function Workspace({
 
                     </div>
 
-                    <DspVisualization
-                      title="LAPLACE MAGNITUDE"
-                      values={
-                        laplace.magnitude_db
-                      }
-                      formatter={
-                        formatDb
-                      }
+                    <LaplaceVisualization
+                      magnitude={laplace.magnitude_db}
+                      phase={laplace.phase_rad}
+                      frequencies={laplace.frequencies_hz}
+                      sigma={laplace.sigma}
+                      currentTime={currentTime}
+                      duration={duration}
+                      isPlaying={isPlaying}
+                      formatNumberValue={formatNumber}
+                      formatFrequency={formatHz}
+                      formatDecibels={formatDb}
+                      formatSigmaValue={formatSigma}
                     />
 
                   </>
@@ -4335,6 +4475,226 @@ function DspRow({
 
 
 /* ============================================================
+   INTERACTIVE LAPLACE VISUALIZATION
+   ============================================================ */
+
+function LaplaceVisualization({
+  magnitude,
+  phase,
+  frequencies,
+  sigma,
+  currentTime = 0,
+  duration = 0,
+  isPlaying = false,
+  formatNumberValue,
+  formatFrequency,
+  formatDecibels,
+  formatSigmaValue,
+}) {
+  const [mode, setMode] = useState("MAGNITUDE");
+  const [selectedRow, setSelectedRow] = useState(0);
+  const [hoveredCell, setHoveredCell] = useState(null);
+
+  const magnitudeGrid = Array.isArray(magnitude)
+    ? magnitude.filter(Array.isArray)
+    : [];
+
+  const phaseGrid = Array.isArray(phase)
+    ? phase.filter(Array.isArray)
+    : [];
+
+  const sourceGrid = mode === "PHASE" && phaseGrid.length
+    ? phaseGrid
+    : magnitudeGrid;
+
+  const sourceColumnCount = sourceGrid.reduce(
+    (largest, row) => Math.max(largest, row.length),
+    0
+  );
+  const displayRowCount = Math.min(sourceGrid.length, 16);
+  const displayColumnCount = Math.min(sourceColumnCount, 128);
+  const rowIndexes = Array.from({ length: displayRowCount }, (_, index) =>
+    displayRowCount <= 1
+      ? 0
+      : Math.round((index / (displayRowCount - 1)) * (sourceGrid.length - 1))
+  );
+  const columnIndexes = Array.from({ length: displayColumnCount }, (_, index) =>
+    displayColumnCount <= 1
+      ? 0
+      : Math.round((index / (displayColumnCount - 1)) * (sourceColumnCount - 1))
+  );
+  const grid = rowIndexes.map((rowIndex) =>
+    columnIndexes.map((columnIndex) => sourceGrid[rowIndex]?.[columnIndex])
+  );
+  const displaySigma = rowIndexes.map((index) => sigma?.[index]);
+  const displayFrequencies = columnIndexes.map((index) => frequencies?.[index]);
+
+  const values = grid.flat().map(Number).filter(Number.isFinite);
+  const minimum = values.length ? Math.min(...values) : 0;
+  const maximum = values.length ? Math.max(...values) : 1;
+  const range = maximum === minimum ? 1 : maximum - minimum;
+  const safeRowIndex = Math.min(
+    Math.max(0, selectedRow),
+    Math.max(0, grid.length - 1)
+  );
+  const profile = Array.isArray(grid[safeRowIndex])
+    ? grid[safeRowIndex].map(Number).filter(Number.isFinite)
+    : [];
+  const profileMin = profile.length ? Math.min(...profile) : 0;
+  const profileMaxRaw = profile.length ? Math.max(...profile) : 1;
+  const profileMax = profileMaxRaw === profileMin
+    ? profileMin + 1
+    : profileMaxRaw;
+  const profilePoints = profile
+    .map((value, index) => {
+      const x = profile.length === 1
+        ? 450
+        : (index / (profile.length - 1)) * 900;
+      const y = 170 - ((value - profileMin) / (profileMax - profileMin)) * 150 - 10;
+      return `${x},${y}`;
+    })
+    .join(" ");
+  const selectedSigma = Array.isArray(displaySigma)
+    ? displaySigma[safeRowIndex]
+    : null;
+  const progress = duration > 0
+    ? Math.min(100, Math.max(0, (currentTime / duration) * 100))
+    : 0;
+
+  if (!grid.length || !values.length) {
+    return (
+      <div className="workspace-panel laplace-visualization">
+        <EmptyState
+          title="No Laplace visualization data"
+          text="The current Laplace result does not contain a plottable complex-domain grid."
+        />
+      </div>
+    );
+  }
+
+  const hoveredValue = hoveredCell
+    ? grid[hoveredCell.row]?.[hoveredCell.column]
+    : null;
+  const hoveredFrequency = hoveredCell && Array.isArray(displayFrequencies)
+    ? displayFrequencies[hoveredCell.column]
+    : null;
+  const hoveredSigma = hoveredCell && Array.isArray(displaySigma)
+    ? displaySigma[hoveredCell.row]
+    : null;
+
+  return (
+    <div className="workspace-panel laplace-visualization">
+      <div className="panel-header laplace-visualization-header">
+        <div>
+          <span className="panel-kicker">COMPLEX DOMAIN</span>
+          <h3>INTERACTIVE LAPLACE SURFACE</h3>
+        </div>
+
+        <div className="laplace-mode-switch" aria-label="Laplace display quantity">
+          <button
+            type="button"
+            className={mode === "MAGNITUDE" ? "active" : ""}
+            aria-pressed={mode === "MAGNITUDE"}
+            onClick={() => setMode("MAGNITUDE")}
+          >
+            MAGNITUDE
+          </button>
+          <button
+            type="button"
+            className={mode === "PHASE" ? "active" : ""}
+            aria-pressed={mode === "PHASE"}
+            disabled={!phaseGrid.length}
+            onClick={() => setMode("PHASE")}
+          >
+            PHASE
+          </button>
+        </div>
+      </div>
+
+      <div className="laplace-playback-status">
+        <span>{isPlaying ? "PLAYING" : "PAUSED"}</span>
+        <strong>{formatWaveformTime(currentTime)} / {formatWaveformTime(duration)}</strong>
+        <div aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
+        <small>Transform represents the analyzed source window</small>
+      </div>
+
+      <div className="laplace-surface-wrap">
+        <div
+          className={`laplace-surface is-${mode.toLowerCase()}`}
+          role="grid"
+          aria-label={`${mode.toLowerCase()} by sigma and frequency`}
+          style={{
+            gridTemplateColumns: `repeat(${Math.max(...grid.map((row) => row.length))}, minmax(2px, 1fr))`,
+            gridTemplateRows: `repeat(${grid.length}, minmax(18px, 1fr))`,
+          }}
+          onPointerLeave={() => setHoveredCell(null)}
+        >
+          {grid.map((row, rowIndex) =>
+            row.map((rawValue, columnIndex) => {
+              const value = Number(rawValue);
+              const intensity = Number.isFinite(value)
+                ? (value - minimum) / range
+                : 0;
+
+              return (
+                <button
+                  type="button"
+                  role="gridcell"
+                  key={`${rowIndex}-${columnIndex}`}
+                  className={safeRowIndex === rowIndex ? "selected-row" : ""}
+                  data-negative={value < 0 ? "true" : "false"}
+                  style={{
+                    "--laplace-intensity": Math.max(0.08, intensity),
+                  }}
+                  aria-label={`${formatSigmaValue(displaySigma[rowIndex])}, ${formatFrequency(displayFrequencies[columnIndex])}, ${mode === "PHASE" ? `${formatNumberValue(value)} rad` : formatDecibels(value)}`}
+                  onPointerEnter={() => setHoveredCell({ row: rowIndex, column: columnIndex })}
+                  onFocus={() => setHoveredCell({ row: rowIndex, column: columnIndex })}
+                  onBlur={() => setHoveredCell(null)}
+                  onClick={() => setSelectedRow(rowIndex)}
+                />
+              );
+            })
+          )}
+        </div>
+
+        {hoveredCell && (
+          <div className="laplace-readout" role="status">
+            <span>{formatFrequency(hoveredFrequency)}</span>
+            <span>σ {formatSigmaValue(hoveredSigma)}</span>
+            <strong>{mode === "PHASE" ? `${formatNumberValue(hoveredValue)} rad` : formatDecibels(hoveredValue)}</strong>
+          </div>
+        )}
+      </div>
+
+      <div className="laplace-profile">
+        <div className="laplace-profile-header">
+          <div>
+            <span className="panel-kicker">SELECTED SIGMA PROFILE</span>
+            <strong>σ {formatSigmaValue(selectedSigma)}</strong>
+          </div>
+          <span>{mode === "PHASE" ? "PHASE / rad" : "MAGNITUDE / dB"}</span>
+        </div>
+        <svg
+          viewBox="0 0 900 180"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label={`${mode.toLowerCase()} frequency profile at sigma ${formatSigmaValue(selectedSigma)}`}
+        >
+          <line x1="0" y1="90" x2="900" y2="90" className="dsp-chart-grid-line" />
+          <polyline points={profilePoints} fill="none" className="dsp-chart-line" />
+        </svg>
+        <div className="dsp-chart-axis" aria-hidden="true">
+          <span>{formatFrequency(displayFrequencies[0])}</span>
+          <span>FREQUENCY</span>
+          <span>{formatFrequency(displayFrequencies[displayFrequencies.length - 1])}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ============================================================
    DSP VISUALIZATION
    ============================================================ */
 
@@ -4342,13 +4702,29 @@ function DspVisualization({
   title,
   values,
   formatter,
+  xValues,
+  xFormatter,
+  referenceValues,
+  referenceLabel,
+  statusText,
+  interactive = false,
 }) {
+  const [hoverIndex, setHoverIndex] = useState(null);
+
   const data = useMemo(
     () =>
       flattenForChart(
         values
       ).slice(0, 400),
     [values]
+  );
+
+  const referenceData = useMemo(
+    () =>
+      flattenForChart(
+        referenceValues
+      ).slice(0, 400),
+    [referenceValues]
   );
 
   if (!data.length) {
@@ -4381,28 +4757,32 @@ function DspVisualization({
   const width = 900;
   const height = 230;
 
+  const scaleData = referenceData.length === data.length
+    ? [...data, ...referenceData]
+    : data;
+
   const min =
-    Math.min(...data);
+    Math.min(...scaleData);
 
   const rawMax =
-    Math.max(...data);
+    Math.max(...scaleData);
 
   const max =
     rawMax === min
       ? min + 1
       : rawMax;
 
-  const points = data
+  const createPoints = (trace) => trace
     .map(
       (
         value,
         index
       ) => {
         const x =
-          data.length === 1
+          trace.length === 1
             ? width / 2
             : (index /
-                (data.length -
+                (trace.length -
                   1)) *
               width;
 
@@ -4418,12 +4798,71 @@ function DspVisualization({
     )
     .join(" ");
 
+  const points = createPoints(data);
+
+  const referencePoints = referenceData.length === data.length
+    ? createPoints(referenceData)
+    : "";
+
   const safeFormatter =
     typeof formatter ===
     "function"
       ? formatter
       : (value) =>
           String(value);
+
+  const hasXAxis =
+    Array.isArray(xValues) &&
+    xValues.length === data.length;
+
+  const safeXFormatter =
+    typeof xFormatter === "function"
+      ? xFormatter
+      : safeFormatter;
+
+  const rangeStart = hasXAxis
+    ? xValues[0]
+    : min;
+
+  const rangeEnd = hasXAxis
+    ? xValues[xValues.length - 1]
+    : max;
+
+  const activeHoverIndex = Number.isInteger(hoverIndex)
+    ? Math.min(data.length - 1, Math.max(0, hoverIndex))
+    : null;
+
+  const hoverValue = activeHoverIndex === null
+    ? null
+    : data[activeHoverIndex];
+
+  const hoverXValue = activeHoverIndex === null || !hasXAxis
+    ? null
+    : xValues[activeHoverIndex];
+
+  const hoverX = activeHoverIndex === null || data.length === 1
+    ? 0
+    : (activeHoverIndex / (data.length - 1)) * width;
+
+  const hoverY = hoverValue === null
+    ? 0
+    : height -
+      ((hoverValue - min) / (max - min)) * (height - 20) -
+      10;
+
+  function updateHover(event) {
+    if (!interactive) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fraction = Math.min(
+      1,
+      Math.max(0, (event.clientX - rect.left) / rect.width)
+    );
+
+    setHoverIndex(Math.round(fraction * (data.length - 1)));
+  }
 
   return (
     <div className="workspace-panel dsp-chart-panel">
@@ -4441,18 +4880,43 @@ function DspVisualization({
         </div>
 
         <span className="dsp-chart-range">
-          {safeFormatter(
-            min
+          {statusText || (
+            <>
+          {(hasXAxis ? safeXFormatter : safeFormatter)(
+            rangeStart
           )}{" "}
           →{" "}
-          {safeFormatter(
-            max
+          {(hasXAxis ? safeXFormatter : safeFormatter)(
+            rangeEnd
+          )}
+            </>
           )}
         </span>
 
       </div>
 
-      <div className="dsp-svg-chart">
+      <div
+        className={`dsp-svg-chart${interactive ? " is-interactive" : ""}`}
+        onPointerMove={updateHover}
+        onPointerLeave={() => setHoverIndex(null)}
+        tabIndex={interactive ? 0 : undefined}
+        aria-label={interactive ? `${title}. Use left and right arrow keys to inspect frequency bins.` : undefined}
+        onKeyDown={(event) => {
+          if (!interactive || !["ArrowLeft", "ArrowRight"].includes(event.key)) {
+            return;
+          }
+
+          event.preventDefault();
+          const direction = event.key === "ArrowRight" ? 1 : -1;
+          setHoverIndex((index) => {
+            const current = Number.isInteger(index)
+              ? index
+              : Math.floor(data.length / 2);
+
+            return Math.min(data.length - 1, Math.max(0, current + direction));
+          });
+        }}
+      >
 
         <svg
           viewBox={`0 0 ${width} ${height}`}
@@ -4473,13 +4937,67 @@ function DspVisualization({
             className="dsp-chart-grid-line"
           />
 
+          {referencePoints && (
+            <polyline
+              points={referencePoints}
+              fill="none"
+              className="dsp-chart-reference-line"
+            />
+          )}
+
           <polyline
             points={points}
             fill="none"
             className="dsp-chart-line"
           />
 
+          {activeHoverIndex !== null && (
+            <>
+              <line
+                x1={hoverX}
+                y1="0"
+                x2={hoverX}
+                y2={height}
+                className="dsp-chart-crosshair"
+              />
+              <circle
+                cx={hoverX}
+                cy={hoverY}
+                r="4"
+                className="dsp-chart-marker"
+              />
+            </>
+          )}
+
         </svg>
+
+        {hasXAxis && (
+          <div className="dsp-chart-axis" aria-hidden="true">
+            <span>{safeXFormatter(rangeStart)}</span>
+            <span>FREQUENCY</span>
+            <span>{safeXFormatter(rangeEnd)}</span>
+          </div>
+        )}
+
+        {referencePoints && (
+          <div className="dsp-chart-legend" aria-label="Spectrum trace legend">
+            <span><i className="is-live" />LIVE BLOCK</span>
+            <span><i className="is-reference" />{referenceLabel || "REFERENCE"}</span>
+          </div>
+        )}
+
+        {activeHoverIndex !== null && (
+          <div
+            className="dsp-chart-tooltip"
+            style={{ left: `${(activeHoverIndex / Math.max(1, data.length - 1)) * 100}%` }}
+          >
+            {hoverXValue !== null && <strong>{safeXFormatter(hoverXValue)}</strong>}
+            <span>{safeFormatter(hoverValue)}</span>
+            {referenceData[activeHoverIndex] !== undefined && (
+              <small>MAX {safeFormatter(referenceData[activeHoverIndex])}</small>
+            )}
+          </div>
+        )}
 
       </div>
 
@@ -4527,7 +5045,7 @@ function buildWaveformPoints(
   count = 260
 ) {
   if (
-    !Array.isArray(source) ||
+    !isSampleCollection(source) ||
     !source.length
   ) {
     return [];
@@ -4608,6 +5126,17 @@ function buildWaveformPoints(
   return points.map(
     (value) =>
       value / max
+  );
+}
+
+
+function isSampleCollection(value) {
+  return (
+    Array.isArray(value) ||
+    (
+      ArrayBuffer.isView(value) &&
+      typeof value.length === "number"
+    )
   );
 }
 

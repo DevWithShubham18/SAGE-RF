@@ -109,7 +109,10 @@ function WaterfallPanel({ waterfall }) {
   }, [waterfall]);
 
   return (
-    <section className="workspace-panel waterfall-panel">
+    <section
+      className="workspace-panel waterfall-panel"
+      aria-label="Time and frequency waterfall analysis"
+    >
       <div className="panel-header">
         <div>
           <span className="panel-kicker">
@@ -126,7 +129,11 @@ function WaterfallPanel({ waterfall }) {
       </div>
 
       <div className="waterfall-stage">
-        <canvas ref={canvasRef} />
+        <canvas
+          ref={canvasRef}
+          role="img"
+          aria-label="Waterfall power map over time and frequency"
+        />
       </div>
 
       <div className="waterfall-axis">

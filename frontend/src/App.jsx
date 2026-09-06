@@ -390,6 +390,7 @@ function GlobalNavigation({
                   : "sage-nav-tab"
               }
               onClick={() => onNavigate(item.id)}
+              aria-current={active ? "page" : undefined}
             >
               <Icon size={15} />
 
@@ -1579,6 +1580,7 @@ function App({ user }) {
           <button
             type="button"
             className="sage-workstation-nav-item active"
+            aria-current="page"
           >
             <Monitor size={15} />
             WORKSTATION

@@ -18,7 +18,10 @@ function SpectrumPanel({ spectrum }) {
   }));
 
   return (
-    <section className="workspace-panel spectrum-panel">
+    <section
+      className="workspace-panel spectrum-panel"
+      aria-label="Frequency spectrum analysis"
+    >
       <div className="panel-header">
         <div>
           <span className="panel-kicker">SPECTRUM ANALYZER</span>
@@ -45,10 +48,12 @@ function SpectrumPanel({ spectrum }) {
                 >
                   <stop
                     offset="0%"
+                    stopColor="var(--sage-accent)"
                     stopOpacity={0.45}
                   />
                   <stop
                     offset="100%"
+                    stopColor="var(--sage-accent)"
                     stopOpacity={0}
                   />
                 </linearGradient>
@@ -56,6 +61,7 @@ function SpectrumPanel({ spectrum }) {
 
               <CartesianGrid
                 strokeDasharray="3 6"
+                stroke="var(--sage-border)"
                 opacity={0.12}
               />
 
@@ -64,12 +70,20 @@ function SpectrumPanel({ spectrum }) {
                 tickFormatter={(value) =>
                   `${(value / 1000).toFixed(1)}k`
                 }
-                tick={{ fontSize: 11 }}
+                stroke="var(--sage-text-faint)"
+                tick={{
+                  fill: "var(--sage-text-muted)",
+                  fontSize: 10,
+                }}
                 minTickGap={40}
               />
 
               <YAxis
-                tick={{ fontSize: 11 }}
+                stroke="var(--sage-text-faint)"
+                tick={{
+                  fill: "var(--sage-text-muted)",
+                  fontSize: 10,
+                }}
                 width={50}
               />
 
@@ -81,11 +95,21 @@ function SpectrumPanel({ spectrum }) {
                 labelFormatter={(value) =>
                   `${Number(value).toFixed(2)} Hz`
                 }
+                contentStyle={{
+                  background: "var(--sage-bg-elevated)",
+                  border: "1px solid var(--sage-border)",
+                  borderRadius: "var(--sage-radius-sm)",
+                  color: "var(--sage-text-primary)",
+                }}
+                labelStyle={{
+                  color: "var(--sage-text-secondary)",
+                }}
               />
 
               <Area
                 type="monotone"
                 dataKey="power"
+                stroke="var(--sage-accent)"
                 strokeWidth={2}
                 fill="url(#spectrumFill)"
                 dot={false}
