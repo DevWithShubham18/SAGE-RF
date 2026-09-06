@@ -38,8 +38,10 @@ dist/
 # Temporary files
 *.tmp
 *.temp
+*.backup
 
 # RF data - NEVER commit raw captures
+data/
 data/raw/
 data/uploads/
 data/processed/
