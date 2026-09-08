@@ -11,6 +11,7 @@ import { auth } from "../../firebase/firebase";
 import {
   Activity,
   BarChart3,
+  Bot,
   ChevronRight,
   Clock3,
   Cpu,
@@ -41,6 +42,7 @@ import {
 import SpectrumPanel from "../spectrum/SpectrumPanel";
 import WaterfallPanel from "../waterfall/WaterfallPanel";
 import MultiSignalTimeline from "../waveform/MultiSignalTimeline";
+import AIAssistant from "../assistant/AIAssistant";
 
 
 /* ============================================================
@@ -1170,6 +1172,13 @@ function Workspace({
       description:
         "Workspace configuration",
     },
+    {
+      id: "AI ASSISTANT",
+      label: "AI Assistant",
+      icon: Bot,
+      description:
+        "Conversational RF, DSP and engineering guidance",
+    },
   ];
 
   const activeToolInfo =
@@ -2107,6 +2116,10 @@ function Workspace({
                 {activeTool ===
                   "SETTINGS" &&
                   "Workspace Settings"}
+
+                {activeTool ===
+                  "AI ASSISTANT" &&
+                  "AI Assistant"}
               </h1>
 
               <p>
@@ -4041,6 +4054,11 @@ function Workspace({
               </div>
 
             </section>
+          )}
+
+          {activeTool ===
+            "AI ASSISTANT" && (
+            <AIAssistant />
           )}
 
         </main>

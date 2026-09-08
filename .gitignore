@@ -20,6 +20,15 @@ __pycache__/
 .env.*
 !.env.example
 
+# Firebase/local credential files (targeted; source JSON remains trackable)
+firebase-service-account*.json
+*firebase-adminsdk*.json
+service-account*.json
+**/firebase-credentials*.json
+**/firebase-private-key*
+*.private-key.pem
+*.private-key.json
+
 # Node
 node_modules/
 dist/
