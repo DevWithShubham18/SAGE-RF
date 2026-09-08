@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://sage-rf-api.onrender.com/api/:path*"
+    }
+  ]
+}
