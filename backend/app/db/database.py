@@ -24,6 +24,16 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
+def initialize_database(bind=engine) -> None:
+    """Create any missing application tables without altering existing data."""
+
+    # Import models here so their table metadata is registered before
+    # create_all() runs. The local import also avoids a module-level cycle.
+    from backend.app.db import models  # noqa: F401
+
+    Base.metadata.create_all(bind=bind)
+
+
 def get_db():
     db = SessionLocal()
 

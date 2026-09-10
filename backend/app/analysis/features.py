@@ -538,13 +538,13 @@ def analyze_signal(
 
         "waterfall": {
             "frequencies_hz":
-                waterfall_frequencies.tolist(),
+                waterfall_frequencies,
 
             "times_seconds":
-                waterfall_times.tolist(),
+                waterfall_times,
 
             "power_db":
-                waterfall_power_db.tolist(),
+                waterfall_power_db,
 
             "time_bins":
                 int(

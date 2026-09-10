@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,32 @@ FRONTEND_WATERFALL_COLUMNS = 512
 HISTORY_SPECTRUM_POINTS = 256
 HISTORY_WATERFALL_ROWS = 0
 HISTORY_WATERFALL_COLUMNS = 0
+
+
+def _get_max_analysis_samples() -> int | None:
+    """Return the optional deployment memory-safety analysis window."""
+
+    raw_value = os.getenv(
+        "SAGE_RF_MAX_ANALYSIS_SAMPLES",
+        "",
+    ).strip()
+
+    if not raw_value:
+        return None
+
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "SAGE_RF_MAX_ANALYSIS_SAMPLES must be an integer"
+        ) from exc
+
+    if value < 4096:
+        raise RuntimeError(
+            "SAGE_RF_MAX_ANALYSIS_SAMPLES must be at least 4096"
+        )
+
+    return value
 
 
 # ============================================================
@@ -334,13 +361,40 @@ def _make_frontend_safe_analysis(
     # Waterfall
     # --------------------------------------------------------
 
-    if "waterfall" in result:
-        result["waterfall"] = (
-            _compact_waterfall(
-                result.get("waterfall"),
-                FRONTEND_WATERFALL_ROWS,
-                FRONTEND_WATERFALL_COLUMNS,
-            )
+    waterfall = result.get("waterfall")
+
+    if isinstance(waterfall, dict):
+        compact_waterfall = dict(waterfall)
+
+        compact_waterfall["frequencies_hz"] = _downsample_1d(
+            waterfall.get("frequencies_hz", []),
+            FRONTEND_WATERFALL_COLUMNS,
+        )
+        compact_waterfall["times_seconds"] = _downsample_1d(
+            waterfall.get("times_seconds", []),
+            FRONTEND_WATERFALL_ROWS,
+        )
+        compact_waterfall["power_db"] = _compact_waterfall(
+            waterfall.get("power_db", []),
+            FRONTEND_WATERFALL_ROWS,
+            FRONTEND_WATERFALL_COLUMNS,
+        )
+        compact_waterfall["time_bins"] = len(
+            compact_waterfall["power_db"]
+        )
+        compact_waterfall["frequency_bins"] = (
+            len(compact_waterfall["power_db"][0])
+            if compact_waterfall["power_db"]
+            else 0
+        )
+
+        result["waterfall"] = compact_waterfall
+
+    elif waterfall is not None:
+        result["waterfall"] = _compact_waterfall(
+            waterfall,
+            FRONTEND_WATERFALL_ROWS,
+            FRONTEND_WATERFALL_COLUMNS,
         )
 
     # --------------------------------------------------------
@@ -916,6 +970,7 @@ def _make_emergency_history(
 def _run_sage_dsp_engine(
     temporary_path: str,
     source_format: str,
+    max_samples: int | None = None,
 ) -> dict:
     """
     Run the standalone SAGE DSP engine.
@@ -1001,7 +1056,8 @@ def _run_sage_dsp_engine(
         # ----------------------------------------------------
 
         signal = load_wav_as_signal(
-            temporary_path
+            temporary_path,
+            max_samples=max_samples,
         )
 
         # ----------------------------------------------------
@@ -1340,6 +1396,7 @@ async def analyze_file(
         )
 
     temporary_path: str | None = None
+    max_analysis_samples = _get_max_analysis_samples()
 
     try:
 
@@ -1352,11 +1409,15 @@ async def analyze_file(
             delete=False,
         ) as temp:
 
-            file_bytes = await file.read()
+            while True:
+                chunk = await file.read(
+                    1024 * 1024
+                )
 
-            temp.write(
-                file_bytes
-            )
+                if not chunk:
+                    break
+
+                temp.write(chunk)
 
             temporary_path = temp.name
 
@@ -1367,6 +1428,7 @@ async def analyze_file(
         signal = load_signal(
             temporary_path,
             iq_sample_rate=iq_sample_rate,
+            max_samples=max_analysis_samples,
         )
 
         samples = signal.samples
@@ -1394,6 +1456,18 @@ async def analyze_file(
                 signal.duration_seconds
             ),
         }
+
+        if max_analysis_samples is not None:
+            metadata[
+                "analysis_sample_limit"
+            ] = max_analysis_samples
+
+            metadata[
+                "analysis_window_limited"
+            ] = bool(
+                signal.sample_count
+                >= max_analysis_samples
+            )
 
         # ====================================================
         # 6. Amplitude / power statistics
@@ -1720,6 +1794,9 @@ async def analyze_file(
                 ),
                 source_format=(
                     signal.source_format
+                ),
+                max_samples=(
+                    max_analysis_samples
                 ),
             )
         )

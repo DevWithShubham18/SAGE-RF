@@ -18,3 +18,5 @@ services:
         sync: false
       - key: FIREBASE_PROJECT_ID
         sync: false
+      - key: SAGE_RF_MAX_ANALYSIS_SAMPLES
+        value: 524288

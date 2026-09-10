@@ -1,8 +1,19 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes import router
 from backend.app.api.assistant import router as assistant_router
+from backend.app.db.database import initialize_database
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Initialize durable application resources before serving requests."""
+
+    initialize_database()
+    yield
 
 
 app = FastAPI(
@@ -12,6 +23,7 @@ app = FastAPI(
         "Frequency Intelligence platform."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 

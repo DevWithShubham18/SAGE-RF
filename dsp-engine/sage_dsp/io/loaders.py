@@ -8,6 +8,7 @@ from sage_dsp.core.signal import Signal
 
 def load_wav_as_signal(
     path: str | Path,
+    max_samples: int | None = None,
 ) -> Signal:
     """
     Load a WAV file using SAGE-RF's existing backend loader
@@ -21,7 +22,10 @@ def load_wav_as_signal(
 
     from backend.app.io.readers import load_signal
 
-    loaded = load_signal(path)
+    loaded = load_signal(
+        path,
+        max_samples=max_samples,
+    )
 
     return Signal(
         samples=loaded.samples,
