@@ -161,32 +161,14 @@ Local databases, RF captures, `.env` files, credentials, virtual environments, `
 
 ## 8. Final Presentation
 
-Place the final SIH presentation in a documentation directory such as `docs/presentation/` and replace the placeholder below with the committed file or approved cloud link.
-
-**Final presentation:** [ADD FINAL SIH PRESENTATION LINK OR REPOSITORY PATH]
+**Final presentation:** https://drive.google.com/file/d/1aPwGH8uhEV4-Bm3ZENZNxyTExXAlRvlS/view?usp=sharing
 
 ## 9. Demo Video
 
-**Demo video:** [ADD FINAL DEMO VIDEO LINK]
+**Demo video:** 
 
-The final video should demonstrate authentication, recording import, analysis, workstation tools, history/report generation, and a real AI Assistant request without exposing credentials or private data.
 
 ## 10. Screenshots / Prototype Photos
-
-The repository already contains `frontend/src/assets/`, which can hold curated application screenshots if they are later added. Use descriptive filenames and reference only genuine captures from the working application.
-
-Suggested coverage:
-
-- Authentication screen
-- Recording import and completed analysis
-- Spectrum and waterfall
-- Editor/playback controls
-- Signal Lab and mixer
-- Fourier and Laplace tools
-- History and PDF report
-- AI Assistant
-
-No placeholder or fabricated screenshots are embedded in this README.
 
 **Screenshot paths:** <img width="1466" height="795" alt="image" src="https://github.com/user-attachments/assets/b782d7f8-534e-4c13-bdf2-ac6f2ac4b696" />
 
