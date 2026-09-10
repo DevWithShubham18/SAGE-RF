@@ -166,6 +166,7 @@ Local databases, RF captures, `.env` files, credentials, virtual environments, `
 ## 9. Demo Video
 
 **Demo video:** https://drive.google.com/drive/folders/1ephr9Ybae7dNTOUCiZfyBbRhSoPE65Ri?usp=drive_link
+**youtube link** https://www.youtube.com/watch?v=Ga8Iog7Baq0
 
 
 ## 10. Screenshots / Prototype Photos
