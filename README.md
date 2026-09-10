@@ -7,10 +7,10 @@ SAGE-RF is an authenticated RF and audio signal-analysis workstation for importi
 | Field | Details |
 | --- | --- |
 | Project Title | **SAGE-RF / RF Signal Workstation** |
-| SIH Problem Statement ID | **[ADD SIH PS ID]** |
-| SIH Problem Statement Title | **[ADD SIH PS TITLE]** |
-| Category | **[ADD SIH CATEGORY]** |
-| Theme | **[ADD SIH THEME]** |
+| SIH Problem Statement ID | **26147** |
+| SIH Problem Statement Title | **Automated model for analysis of .IQ and .wav files along with signal parameter extraction** |
+| Category | **Software** |
+| Theme | **Space Technology** |
 | Frontend | [sage-rf.vercel.app](https://sage-rf.vercel.app) |
 | Backend API | [sage-rf-api.onrender.com](https://sage-rf-api.onrender.com) |
 
@@ -188,7 +188,8 @@ Suggested coverage:
 
 No placeholder or fabricated screenshots are embedded in this README.
 
-**Screenshot paths:** [ADD SCREENSHOT ASSET PATHS]
+**Screenshot paths:** <img width="1466" height="795" alt="image" src="https://github.com/user-attachments/assets/b782d7f8-534e-4c13-bdf2-ac6f2ac4b696" />
+
 
 ## 11. Installation
 
@@ -272,7 +273,6 @@ Firebase web configuration is used by the browser client. OpenAI keys and Fireba
 - **Firebase:** the existing Firebase project supplies Authentication and Firestore.
 - **OpenAI:** the API key is configured only in the Render backend environment.
 
-Render's free filesystem is ephemeral. The backend recreates missing SQLite tables at startup, but SQLite records are not guaranteed to survive service rebuilds. Firestore-based user history is separate and remains available according to the Firebase project configuration.
 
 ## 12. Run
 
@@ -322,13 +322,3 @@ npm run build
 - Add broader automated browser, accessibility, and end-to-end deployment tests.
 - Add export formats and report visualizations beyond the current PDF summary.
 
-## Important: Security and Production Notes
-
-- Never commit `.env` or `frontend/.env.local`.
-- Never commit OpenAI API keys.
-- Never commit Firebase service-account JSON files, credentials, or private keys.
-- Never expose backend secrets through `VITE_*`, frontend source, browser storage, URLs, or client request payloads.
-- Keep the large local SQLite database, uploaded recordings, generated reports, caches, and virtual environments out of Git.
-- Keep Firebase security rules and authorized domains aligned with the deployed frontend.
-- The AI Assistant is generic in the current version and must not be described as having automatic access to live signal analysis data.
-- Render free instances may cold-start after inactivity, and their local filesystem is not durable production storage.
